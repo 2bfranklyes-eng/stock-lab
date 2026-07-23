@@ -36,6 +36,9 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .glossary dt:first-child, .glossary div:first-child dt { margin-top: 0; }
 .glossary dd { margin: 3px 0 0; font-size: 12.5px; color: #64748b; line-height: 1.65; }
 
+.method ul { margin: 6px 0 0; padding-left: 20px; }
+.method li { font-size: 13px; line-height: 1.95; color: #334155; }
+
 .center { min-height: 70vh; display: flex; flex-direction: column;
   align-items: center; justify-content: center; text-align: center; padding: 24px; gap: 10px; }
 .center.err { color: #c0392b; }
@@ -48,4 +51,5 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   :root { --card: #1e293b; --line: #334155; --track: #0f172a; }
   .card h2 { color: #e2e8f0; }
   .date, .setup p, .lead, .gauge-note, .note, .glossary dd { color: #94a3b8; }
+  .method li { color: #cbd5e1; }
 }

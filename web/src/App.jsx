@@ -112,6 +112,7 @@ export default function App() {
         </ResponsiveContainer>
       </section>
 
+      <MethodCard />
       <StatsCard stats={stats} />
       <Glossary />
     </div>
@@ -175,6 +176,30 @@ function Glossary() {
           <div key={t}><dt>{t}</dt><dd>{d}</dd></div>
         ))}
       </dl>
+    </section>
+  )
+}
+
+function MethodCard() {
+  const ing = [
+    ['😨 VIX (공포지수)', '시장이 얼마나 겁먹었나'],
+    ['📈 모멘텀', '지수가 최근 평균(125일)보다 위인가'],
+    ['🛟 안전자산 선호', '주식 vs 안전한 채권, 뭘 더 샀나'],
+    ['👥 시장 폭', '소수 대형주만 오르나, 골고루 오르나'],
+  ]
+  return (
+    <section className="card method">
+      <h2>🔧 이 점수, 어떻게 만드나요?</h2>
+      <p className="cap">실적·뉴스가 아니라 '시장 분위기'를 4가지 각도로 재서 하나로 합친 값이에요.</p>
+      <ul>
+        {ing.map(([t, d]) => (
+          <li key={t}><b>{t}</b> — {d}</li>
+        ))}
+      </ul>
+      <p className="note">
+        각 재료를 <b>지난 1년 중 몇 %ile</b>인지로 0~100 환산 → 공포 재료는 뒤집어 방향을 통일
+        → <b>4개 평균</b> → 최근 10일로 부드럽게(평활) = 최종 심리점수.
+      </p>
     </section>
   )
 }
