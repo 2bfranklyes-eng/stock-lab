@@ -53,6 +53,17 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .chart-legend .swatch { width: 13px; border-radius: 2px; display: inline-block; }
 .chart-legend button.off .swatch { opacity: .35; }
 
+/* ── 섹션 구분 헤딩 (유동성 등) ── */
+.section-head { margin: 40px 0 20px; padding-top: 26px; border-top: 1px solid var(--line); }
+.section-head h1 { font-size: 22px; margin: 0 0 6px; }
+
+/* ── 원자재료 수치 카드 (금리·환율 등) ── */
+.raw-figs { display: flex; gap: 10px; margin-bottom: 14px; }
+.raw-fig { flex: 1; background: var(--card); border: 1px solid var(--line);
+  border-radius: 12px; padding: 10px 12px; text-align: center; }
+.rf-label { display: block; font-size: 11px; color: #94a3b8; margin-bottom: 3px; }
+.rf-val { display: block; font-size: 18px; font-weight: 700; color: #334155; }
+
 .method ul { margin: 6px 0 0; padding-left: 20px; }
 .method li { font-size: 13px; line-height: 1.95; color: #334155; }
 .glossary dl { margin: 0; }
@@ -82,4 +93,5 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   .seg button.on { color: #fff; }
   .chart-legend button { color: #cbd5e1; }
   .chart-legend button.off { color: #6b7280; }
+  .rf-val { color: #e2e8f0; }
 }
