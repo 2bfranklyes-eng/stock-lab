@@ -1,9 +1,9 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// GitHub Pages 배포 경로: https://2bfranklyes-eng.github.io/stock-lab/
+// 개발(serve)은 루트 '/', 배포 빌드(build)만 GitHub Pages 경로 '/stock-lab/'
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [react()],
-  base: '/stock-lab/',
-})
+  base: command === 'build' ? '/stock-lab/' : '/',
+}))
