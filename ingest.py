@@ -19,10 +19,15 @@ sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"
 #         kr_index=코스피, kr_bond=국고채10년(미국 TLT 대응),
 #         kr_kosdaq=코스닥(코스피와의 20일 수익률차 → 위험선호/시장 폭, 미국 RSP-SPY 대응).
 #         (동일가중 KOSPI200 ETF는 시총가중과 상관 0.99로 거의 안 갈라져 노이즈라 코스닥으로 교체)
+#   유동성(L) 지표: us_10y·us_3m(금리·커브), dxy(달러), hyg·lqd(신용 스프레드) → 미국 계정에.
+#     한국 유동성은 이 글로벌 지표 + usdkrw(원/달러) + kr_bond(금리)로 계산.
 JOBS = {
     "US": {"vix": "^VIX", "us_index": "^GSPC", "us_bond": "TLT",
-           "rsp": "RSP", "spy": "SPY"},
-    "KR": {"kr_index": "^KS11", "kr_bond": "148070.KS", "kr_kosdaq": "^KQ11"},
+           "rsp": "RSP", "spy": "SPY",
+           "us_10y": "^TNX", "us_3m": "^IRX", "dxy": "DX-Y.NYB",
+           "hyg": "HYG", "iei": "IEI"},
+    "KR": {"kr_index": "^KS11", "kr_bond": "148070.KS", "kr_kosdaq": "^KQ11",
+           "usdkrw": "USDKRW=X"},
 }
 
 

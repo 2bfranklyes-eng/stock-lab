@@ -18,6 +18,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt
-      - run: python ingest.py       # 원천 지표 수집(VIX·S&P·TLT·RSP·SPY)
+      - run: python ingest.py       # 원천 지표 수집 (미국+한국: 심리·유동성 지표)
       - run: python sentiment.py     # S(t) 심리점수 계산 → sentiment_daily
+      - run: python liquidity.py     # L(t) 유동성 지수 계산 → liquidity_daily
       - run: python backtest.py      # 밴드별 통계 → backtest_stats
