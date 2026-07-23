@@ -47,6 +47,9 @@ def main():
     df = pd.DataFrame(raw)
     df["dt"] = pd.to_datetime(df["dt"])
     w = df.pivot(index="dt", columns="code", values="value").sort_index()
+    # 5개 지표가 모두 있는 날만 사용 — 미국 휴장일에 VIX만 값이 들어오는 등
+    # 불완전한 행 하나가 rolling 창을 오염시켜 이후 전체가 NaN 되는 것을 방지
+    w = w.dropna()
 
     # ── 파생 지표 ──
     vix = w["vix"]                                                    # 변동성 (공포)
