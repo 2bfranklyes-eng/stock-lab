@@ -3,6 +3,15 @@
 header h1 { font-size: 22px; margin: 8px 0 6px; }
 .lead { font-size: 13.5px; color: #475569; line-height: 1.75; margin: 0 0 22px; }
 
+/* ── 상단 탭 (시장심리 / 유동성 / 물가 섹션 전환) ── */
+.topnav { position: sticky; top: 0; z-index: 20; display: flex; gap: 6px;
+  padding: 12px 0 14px; margin-bottom: 8px; background: #f4f6f9; }
+.topnav button { font: inherit; font-size: 14px; font-weight: 600; padding: 8px 18px;
+  border-radius: 999px; border: 1px solid var(--line); background: var(--card);
+  color: #64748b; cursor: pointer; transition: background .15s, color .15s; }
+.topnav button:hover { border-color: #cbd5e1; }
+.topnav button.on { background: #d97706; border-color: #d97706; color: #fff; }
+
 /* ── 2단 분할 (US | KR) ── */
 .cols { display: flex; gap: 24px; align-items: flex-start; }
 .col { flex: 1; min-width: 0; }
@@ -86,6 +95,7 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 :root { --card: #ffffff; --line: #e2e8f0; --track: #eef2f6; }
 @media (prefers-color-scheme: dark) {
   :root { --card: #1e293b; --line: #334155; --track: #0f172a; }
+  .topnav { background: #0f172a; }
   .card h2 { color: #e2e8f0; }
   .lead, .col-date, .gauge-note, .note, .cap, .glossary dd, .setup p { color: #94a3b8; }
   .method li { color: #cbd5e1; }

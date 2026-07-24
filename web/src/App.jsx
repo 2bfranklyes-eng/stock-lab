@@ -77,6 +77,41 @@ const LIQ_STATS_NOTE = (
   <>돈이 <b>풀린(완화)</b> 뒤 순풍인지, <b>조인(긴축)</b> 뒤 역풍인지. 20거래일 ≈ 1달. (표본 적어 참고용)</>
 )
 
+// 물가지수 I(t): 종합 + 4성분 (높을수록 물가↑). 색은 심리·유동성과 같은 검증 팔레트.
+const I_SERIES = [
+  { key: 'i_score', name: '물가(종합)', color: '#d97706', width: 2.2 },
+  { key: 'c_be', name: '기대인플레', color: '#2a78d6', width: 1.3 },
+  { key: 'c_energy', name: '에너지', color: '#008300', width: 1.3 },
+  { key: 'c_comm', name: '원자재', color: '#d55181', width: 1.3 },
+  { key: 'c_metal', name: '산업금속', color: '#4a3aa7', width: 1.3 },
+]
+// 물가는 온도계식: 낮을수록 저물가(파랑)·높을수록 고물가(빨강) — 심리 팔레트와 같은 방향.
+const I_BANDS = [
+  { name: '극단저물가', color: '#2471a3' },
+  { name: '저물가', color: '#5dade2' },
+  { name: '중립', color: '#95a5a6' },
+  { name: '고물가', color: '#e59866' },
+  { name: '극단고물가', color: '#c0392b' },
+]
+function infBandOf(v) {
+  if (v < 20) return I_BANDS[0]
+  if (v < 40) return I_BANDS[1]
+  if (v < 60) return I_BANDS[2]
+  if (v < 80) return I_BANDS[3]
+  return I_BANDS[4]
+}
+const I_BAND_DESC = {
+  극단저물가: '물가 압력이 매우 낮은(디스인플레) 상태.',
+  저물가: '물가가 눌린 분위기.',
+  중립: '물가 압력이 평범한 상태.',
+  고물가: '물가가 달아오른 분위기.',
+  극단고물가: '인플레가 과열된 상태. 금리·밸류에이션 부담.',
+}
+const I_STAT_ORDER = ['극단저물가', '저물가', '중립', '고물가', '극단고물가', '전체']
+const INF_STATS_NOTE = (
+  <>물가가 <b>눌릴(저물가)</b> 때 순풍인지, <b>달아오를(고물가)</b> 때 역풍인지. 20거래일 ≈ 1달. (표본 적어 참고용)</>
+)
+
 // 심리에 큰 충격을 준 굵직한 사건들. 차트 타임라인에 세로 표시선+이모지로만 얹음(선 series 아님).
 // markets: 표시할 시장. 날짜는 대략적 발생일 — 실제 거래일로 스냅해서 그림.
 const EVENTS = [
@@ -120,10 +155,35 @@ const RANGES = [
   { label: '전체', days: Infinity },
 ]
 
+// 상단 탭: 시장 배경요인 섹션 전환. key = 렌더할 섹션.
+const TABS = [
+  { key: 'sent', label: '시장심리', emoji: '😨' },
+  { key: 'liq', label: '유동성', emoji: '💧' },
+  { key: 'inf', label: '물가', emoji: '🔥' },
+]
+
 export default function App() {
+  const [tab, setTab] = useState('sent')
   if (!hasKey) return <Setup />
   return (
     <div className="wrap">
+      <nav className="topnav">
+        {TABS.map((t) => (
+          <button key={t.key} className={tab === t.key ? 'on' : ''} onClick={() => setTab(t.key)}>
+            {t.emoji} {t.label}
+          </button>
+        ))}
+      </nav>
+      {tab === 'sent' && <SentimentSection />}
+      {tab === 'liq' && <LiquiditySection />}
+      {tab === 'inf' && <InflationSection />}
+    </div>
+  )
+}
+
+function SentimentSection() {
+  return (
+    <>
       <header>
         <h1>시장 심리</h1>
         <p className="lead">
@@ -131,30 +191,54 @@ export default function App() {
           <b> 미국과 한국</b>을 나란히 봅니다. (실적이 아니라 시장 분위기)
         </p>
       </header>
-
       <div className="cols">
         <MarketColumn market="US" flag="🇺🇸" name="미국" />
         <div className="divider" />
         <MarketColumn market="KR" flag="🇰🇷" name="한국" />
       </div>
+      <MethodCard />
+      <Glossary />
+    </>
+  )
+}
 
-      <div className="section-head">
+function LiquiditySection() {
+  return (
+    <>
+      <header>
         <h1>유동성</h1>
         <p className="lead">
           돈이 얼마나 <b>풀렸는지(완화)</b> 아니면 <b>조였는지(긴축)</b> 를 0~100 점수로.
           <b> 금리·환율·신용</b>을 합쳐 봅니다. (자산가격의 바탕이 되는 돈의 흐름)
         </p>
-      </div>
+      </header>
       <div className="cols">
         <LiquidityColumn market="US" flag="🇺🇸" name="미국" />
         <div className="divider" />
         <LiquidityColumn market="KR" flag="🇰🇷" name="한국" />
       </div>
-
-      <MethodCard />
       <LiquidityMethod />
-      <Glossary />
-    </div>
+    </>
+  )
+}
+
+function InflationSection() {
+  return (
+    <>
+      <header>
+        <h1>물가</h1>
+        <p className="lead">
+          물가가 지금 <b>눌렸는지(저물가)</b> 아니면 <b>달아올랐는지(고물가)</b> 를 0~100 점수로.
+          <b> 유가·원자재·기대인플레</b>를 합쳐 봅니다. (시장이 매일 반영하는 물가 압력)
+        </p>
+      </header>
+      <div className="cols">
+        <InflationColumn market="US" flag="🇺🇸" name="미국" />
+        <div className="divider" />
+        <InflationColumn market="KR" flag="🇰🇷" name="한국" />
+      </div>
+      <InflationMethod />
+    </>
   )
 }
 
@@ -441,6 +525,77 @@ function LiquidityColumn({ market, flag, name }) {
   )
 }
 
+// ── 물가 섹션 (유동성과 동일 구조, 원자재료 수치 카드는 생략) ──
+function InflationBody({ latest, series, stats, market }) {
+  const b = infBandOf(latest.i_score)
+  return (
+    <>
+      <p className="col-date">{latest.dt} 기준</p>
+      <Gauge value={latest.i_score} band={b} lowLabel="저물가" highLabel="고물가" desc={I_BAND_DESC[b.name]} />
+      <TrendChart
+        series={series} config={I_SERIES} market={market} mainKey="i_score"
+        title="I(t) 물가 추이"
+        refLines={[{ y: 80, color: '#c0392b' }, { y: 20, color: '#2471a3' }]}
+        note={<>굵은 <b style={{ color: '#d97706' }}>주황</b>이 종합 물가, 얇은 4선은 성분(각 0~100, 높을수록 물가↑). <b>범례를 누르면</b> 선을 켜고 끌 수 있어요.</>}
+      />
+      <StatsCard stats={stats} order={I_STAT_ORDER} note={INF_STATS_NOTE} />
+    </>
+  )
+}
+
+function InflationColumn({ market, flag, name }) {
+  const [series, setSeries] = useState([])
+  const [latest, setLatest] = useState(null)
+  const [stats, setStats] = useState([])
+  const [state, setState] = useState('loading')
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        const PAGE = 1000, WANT = 1650
+        let all = []
+        for (let from = 0; from < WANT; from += PAGE) {
+          const to = Math.min(from + PAGE - 1, WANT - 1)
+          const { data, error } = await supabase
+            .from('inflation_daily')
+            .select('dt,i_score,band,c_be,c_energy,c_comm,c_metal')
+            .eq('market', market)
+            .order('dt', { ascending: false })
+            .range(from, to)
+          if (error) throw error
+          all = all.concat(data || [])
+          if (!data || data.length < to - from + 1) break
+        }
+        if (!alive) return
+        if (all.length === 0) { setState('empty'); return }
+        const rows = all.slice().reverse()
+        setSeries(rows); setLatest(rows[rows.length - 1]); setState('ok')
+        // 밴드별 이후수익률 통계 — 테이블이 아직 없으면(error) 조용히 표만 생략.
+        const { data: bt } = await supabase.from('inflation_backtest_stats').select('*').eq('market', market)
+        if (alive && bt) setStats(bt)
+      } catch (e) {
+        if (!alive) return
+        // 활성화 전(테이블 미생성)이면 에러 대신 '준비 중'으로 표시.
+        const msg = `${e?.message || ''} ${e?.code || ''}`
+        setState(/exist|find the table|PGRST205|42P01/i.test(msg) ? 'empty' : 'error')
+      }
+    })()
+    return () => { alive = false }
+  }, [market])
+
+  return (
+    <div className="col">
+      <div className="col-head">{flag} <b>{name}</b></div>
+      {state === 'loading' && <div className="col-msg">불러오는 중…</div>}
+      {state === 'error' && <div className="col-msg">데이터를 불러오지 못했어요</div>}
+      {state === 'empty' && (
+        <div className="col-msg soon">🚧<br /><b>데이터 준비 중</b></div>
+      )}
+      {state === 'ok' && latest && <InflationBody latest={latest} series={series} stats={stats} market={market} />}
+    </div>
+  )
+}
+
 function MethodCard() {
   const ing = [
     ['😨 변동성 (공포)', '얼마나 겁먹었나 — 미국은 VIX, 한국은 코스피 실현변동성'],
@@ -484,6 +639,30 @@ function LiquidityMethod() {
       <p className="note">
         각 재료를 <b>지난 1년 중 몇 %ile</b>인지로 0~100 환산 → 긴축 재료는 뒤집어 방향 통일 → <b>4개 평균</b> →
         10일 평활. 절대 수준이 아니라 <b>지난 1년 대비 완화/긴축</b>이라, 저금리가 오래된 시기는 중립으로 읽혀요.
+      </p>
+    </section>
+  )
+}
+
+function InflationMethod() {
+  const ing = [
+    ['📈 기대인플레', '시장이 반영한 물가 — 미국 물가연동채(TIP)÷국채(IEF), 한국 원/달러(수입물가)'],
+    ['🛢️ 에너지', '유가가 오를수록 물가↑ (USO)'],
+    ['🌾 원자재', '원자재 바스켓이 오를수록 물가↑ (DBC)'],
+    ['🔩 산업금속', '구리 등 실물 수요가 강할수록 물가↑ (DBB)'],
+  ]
+  return (
+    <section className="card method">
+      <h2>🔥 물가(I), 어떻게 만드나요?</h2>
+      <p className="cap">CPI는 월간·후행이라, 시장이 매일 반영하는 "물가 압력"을 4가지 각도로 재서 합친 값. 높을수록 물가↑.</p>
+      <ul>
+        {ing.map(([t, d]) => (
+          <li key={t}><b>{t}</b> — {d}</li>
+        ))}
+      </ul>
+      <p className="note">
+        각 재료를 <b>지난 1년 중 몇 %ile</b>인지로 0~100 환산 → <b>4개 평균</b> → 10일 평활.
+        절대 수준이 아니라 <b>지난 1년 대비 물가 압력</b>이라, 실제 CPI보다 방향 전환을 먼저 잡아요.
       </p>
     </section>
   )

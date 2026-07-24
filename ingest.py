@@ -21,11 +21,14 @@ sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"
 #         (동일가중 KOSPI200 ETF는 시총가중과 상관 0.99로 거의 안 갈라져 노이즈라 코스닥으로 교체)
 #   유동성(L) 지표: us_10y·us_3m(금리·커브), dxy(달러), hyg·lqd(신용 스프레드) → 미국 계정에.
 #     한국 유동성은 이 글로벌 지표 + usdkrw(원/달러) + kr_bond(금리)로 계산.
+#   물가(I) 지표: tip·ief(기대인플레=물가연동채/국채), uso(유가), dbc(원자재), dbb(산업금속) → 미국 계정에.
+#     원자재·유가는 글로벌이라 한국 물가에도 그대로 작용. 한국은 여기에 usdkrw(원 약세=수입물가)를 더해 계산.
 JOBS = {
     "US": {"vix": "^VIX", "us_index": "^GSPC", "us_bond": "TLT",
            "rsp": "RSP", "spy": "SPY",
            "us_10y": "^TNX", "us_3m": "^IRX", "dxy": "DX-Y.NYB",
-           "hyg": "HYG", "iei": "IEI"},
+           "hyg": "HYG", "iei": "IEI",
+           "tip": "TIP", "ief": "IEF", "uso": "USO", "dbc": "DBC", "dbb": "DBB"},
     "KR": {"kr_index": "^KS11", "kr_bond": "148070.KS", "kr_kosdaq": "^KQ11",
            "usdkrw": "USDKRW=X"},
 }
