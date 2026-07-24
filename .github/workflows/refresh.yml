@@ -21,4 +21,5 @@ jobs:
       - run: python ingest.py       # 원천 지표 수집 (미국+한국: 심리·유동성 지표)
       - run: python sentiment.py     # S(t) 심리점수 계산 → sentiment_daily
       - run: python liquidity.py     # L(t) 유동성 지수 계산 → liquidity_daily
-      - run: python backtest.py      # 밴드별 통계 → backtest_stats
+      - run: python backtest.py      # 심리 밴드별 통계 → backtest_stats
+      - run: python liquidity_backtest.py  # 유동성 밴드별 통계 → liquidity_backtest_stats

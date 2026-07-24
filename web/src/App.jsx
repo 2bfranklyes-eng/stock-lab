@@ -28,6 +28,9 @@ const BAND_DESC = {
   극단탐욕: '과열 상태. 역사적으로는 조정이 뒤따르기도 했어요.',
 }
 const STAT_ORDER = ['극단공포', '공포', '중립', '탐욕', '극단탐욕', '전체']
+const SENT_STATS_NOTE = (
+  <><b>극단공포</b> 뒤 반등이 뚜렷(역발상 엣지), <b>극단탐욕</b>은 밋밋. 20거래일 ≈ 1달. (표본 적어 참고용)</>
+)
 
 // 추이 그래프의 선들. 성분(변동성·모멘텀·안전자산선호·시장폭)은 s_score를 이루는 4재료.
 // 배열 순서 = 범례 표시 순서(종합이 맨 앞). 색은 dataviz 검증 팔레트(대비·색각 통과).
@@ -69,6 +72,10 @@ const L_BAND_DESC = {
   완화: '돈이 풀리는 분위기. 자산엔 순풍.',
   극단완화: '유동성이 넘치는 상태.',
 }
+const L_STAT_ORDER = ['극단긴축', '긴축', '중립', '완화', '극단완화', '전체']
+const LIQ_STATS_NOTE = (
+  <>돈이 <b>풀린(완화)</b> 뒤 순풍인지, <b>조인(긴축)</b> 뒤 역풍인지. 20거래일 ≈ 1달. (표본 적어 참고용)</>
+)
 
 // 심리에 큰 충격을 준 굵직한 사건들. 차트 타임라인에 세로 표시선+이모지로만 얹음(선 series 아님).
 // markets: 표시할 시장. 날짜는 대략적 발생일 — 실제 거래일로 스냅해서 그림.
@@ -301,7 +308,7 @@ function MarketBody({ latest, series, stats, market }) {
   )
 }
 
-function StatsCard({ stats }) {
+function StatsCard({ stats, order = STAT_ORDER, note = SENT_STATS_NOTE }) {
   const [h, setH] = useState(20)
   if (!stats || stats.length === 0) return null
   const byBand = Object.fromEntries(stats.map((s) => [s.band, s]))
@@ -316,7 +323,7 @@ function StatsCard({ stats }) {
       <table className="stats">
         <thead><tr><th>밴드</th><th>일수</th><th>이후{h}일</th><th>승률</th></tr></thead>
         <tbody>
-          {STAT_ORDER.map((bd) => {
+          {order.map((bd) => {
             const s = byBand[bd]
             if (!s) return null
             const v = s[`fwd${h}`]
@@ -342,9 +349,7 @@ function StatsCard({ stats }) {
           })}
         </tbody>
       </table>
-      <p className="note">
-        <b>극단공포</b> 뒤 반등이 뚜렷(역발상 엣지), <b>극단탐욕</b>은 밋밋. 20거래일 ≈ 1달. (표본 적어 참고용)
-      </p>
+      <p className="note">{note}</p>
     </section>
   )
 }
@@ -368,7 +373,7 @@ function RawFigures({ latest, market }) {
   )
 }
 
-function LiquidityBody({ latest, series, market }) {
+function LiquidityBody({ latest, series, stats, market }) {
   const b = liqBandOf(latest.l_score)
   return (
     <>
@@ -381,6 +386,7 @@ function LiquidityBody({ latest, series, market }) {
         refLines={[{ y: 80, color: '#1e8449' }, { y: 20, color: '#c0392b' }]}
         note={<>굵은 <b style={{ color: '#d97706' }}>주황</b>이 종합 유동성, 얇은 4선은 성분(각 0~100, 높을수록 완화). <b>범례를 누르면</b> 선을 켜고 끌 수 있어요.</>}
       />
+      <StatsCard stats={stats} order={L_STAT_ORDER} note={LIQ_STATS_NOTE} />
     </>
   )
 }
@@ -388,6 +394,7 @@ function LiquidityBody({ latest, series, market }) {
 function LiquidityColumn({ market, flag, name }) {
   const [series, setSeries] = useState([])
   const [latest, setLatest] = useState(null)
+  const [stats, setStats] = useState([])
   const [state, setState] = useState('loading')
   useEffect(() => {
     let alive = true
@@ -411,6 +418,9 @@ function LiquidityColumn({ market, flag, name }) {
         if (all.length === 0) { setState('empty'); return }
         const rows = all.slice().reverse()
         setSeries(rows); setLatest(rows[rows.length - 1]); setState('ok')
+        // 밴드별 이후수익률 통계 — 테이블이 아직 없으면(error) 조용히 표만 생략.
+        const { data: bt } = await supabase.from('liquidity_backtest_stats').select('*').eq('market', market)
+        if (alive && bt) setStats(bt)
       } catch {
         if (alive) setState('error')
       }
@@ -426,7 +436,7 @@ function LiquidityColumn({ market, flag, name }) {
       {state === 'empty' && (
         <div className="col-msg soon">🚧<br /><b>데이터 준비 중</b></div>
       )}
-      {state === 'ok' && latest && <LiquidityBody latest={latest} series={series} market={market} />}
+      {state === 'ok' && latest && <LiquidityBody latest={latest} series={series} stats={stats} market={market} />}
     </div>
   )
 }
