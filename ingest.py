@@ -1,7 +1,9 @@
 # ingest.py — 원천 지표 수집 → Supabase indicator_raw (미국 + 한국)
 import os
 import sys
+import time
 from dotenv import load_dotenv
+import pandas as pd
 import yfinance as yf
 from supabase import create_client
 
@@ -35,8 +37,10 @@ JOBS = {
 
 
 def fetch_close(symbol, start="2015-01-01"):
-    """야후 파이낸스에서 종가 시계열(Series)을 가져온다."""
+    """야후 파이낸스에서 종가 시계열(Series)을 가져온다. 빈 응답이면 빈 Series."""
     df = yf.Ticker(symbol).history(start=start, auto_adjust=True)
+    if df.empty or "Close" not in df.columns:
+        return pd.Series(dtype="float64")
     return df["Close"].dropna()
 
 
@@ -53,16 +57,40 @@ def upsert(rows, chunk=1000):
             rows[i:i + chunk], on_conflict="market,dt,code").execute()
 
 
+def get_series(market, code, sym):
+    """한 지표를 받아온다. 빈 응답/오류면 2초 뒤 1회 재시도(야후 일시적 throttle 방어)."""
+    for attempt in (1, 2):
+        try:
+            s = fetch_close(sym)
+            if not s.empty:
+                return s
+        except Exception as e:
+            print(f"  [{market}] {code} ({sym}): 시도{attempt} 오류 — {e}")
+        if attempt == 1:
+            time.sleep(2)
+    return pd.Series(dtype="float64")
+
+
 def run(market):
-    total = 0
-    for code, sym in JOBS[market].items():
-        rows = to_rows(fetch_close(sym), market, code)
+    total, failed = 0, []
+    for i, (code, sym) in enumerate(JOBS[market].items()):
+        if i:
+            time.sleep(0.8)   # 요청을 살짝 벌려 야후 throttle 방지 (지표 수 늘어난 뒤 대비)
+        s = get_series(market, code, sym)
+        if s.empty:
+            # 한 티커가 비어도 전체를 죽이지 않는다 — 건너뛰고 나머지 진행.
+            failed.append(f"{code}({sym})")
+            print(f"  [{market}] {code} ({sym}): 데이터 없음 — 건너뜀")
+            continue
+        rows = to_rows(s, market, code)
         upsert(rows)
         total += len(rows)
         print(f"  [{market}] {code} ({sym}): {len(rows)} rows")
     sb.table("ingest_log").insert(
-        {"source": "yfinance", "market": market, "rows": total, "status": "ok"}).execute()
-    print(f"[{market}] 완료: 총 {total} rows")
+        {"source": "yfinance", "market": market, "rows": total,
+         "status": "ok" if not failed else "partial"}).execute()
+    tail = f"  (건너뜀: {', '.join(failed)})" if failed else ""
+    print(f"[{market}] 완료: 총 {total} rows{tail}")
 
 
 if __name__ == "__main__":
