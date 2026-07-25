@@ -58,14 +58,16 @@ def compute_us():
     d = pd.DataFrame({"walcl": walcl,
                       "tga": tga.reindex(idx, method="ffill"),
                       "rrp": rrp.reindex(idx, method="ffill")}).dropna()
-    netliq = d["walcl"] - d["tga"] - d["rrp"]
-    c1 = pct_rank(d["walcl"], 104)               # 연준자산↑ = 완화
-    c2 = 100 - pct_rank(d["tga"], 104)           # TGA↑ = 시중자금 흡수 = 실탄↓ → 반전
-    c3 = 100 - pct_rank(d["rrp"], 104)           # 역레포↑ = 자금 잠김 = 실탄↓ → 반전
-    F = pd.concat([c1, c2, c3], axis=1).mean(axis=1).ewm(span=4).mean()
-    out = pd.DataFrame({"f_score": F, "c1": c1, "c2": c2, "c3": c3,
-                        "raw1": netliq / 1e6,                    # 순유동성(조$)
-                        "raw2": d["rrp"] / 1000}).dropna()       # 역레포(십억$)
+    netliq = d["walcl"] - d["tga"] - d["rrp"]    # 절대 순유동성($M) — 실제 달러로 뺀 값(올바른 가중)
+    # ⚠️ 성분을 백분위로 등가중 평균하면 달러규모(연준$6.7T vs TGA$0.8T) 차이를 무시해 왜곡.
+    #    → 종합은 '순유동성 절대값의 백분위', 성분(c1~c3)은 '절대 $조'로 저장(차트에 실제 금액 선으로).
+    F = pct_rank(netliq, 104).ewm(span=4).mean()  # 종합 = 순유동성($) 백분위 (게이지·밴드용)
+    out = pd.DataFrame({"f_score": F,
+                        "c1": d["walcl"] / 1e6,                  # 연준자산($조)
+                        "c2": d["tga"] / 1e6,                    # 재무부계정($조)
+                        "c3": d["rrp"] / 1e6,                    # 역레포($조)
+                        "raw1": netliq / 1e6,                    # 순유동성($조)
+                        "raw2": d["rrp"] / 1000}).dropna()       # 역레포($십억, 헤드라인용)
     return out
 
 

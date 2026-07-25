@@ -45,12 +45,18 @@ def run(market):
     dts = px["dt"].to_numpy()
     fuel["dt"] = pd.to_datetime(fuel["dt"])
 
-    # 각 실탄 날짜 → 그 날짜 이후 첫 거래일 위치, 그 위치 기준 N거래일 뒤 수익률
-    recs_rows = []
+    # 표본 선택: 각 실탄 날짜 → 이후 첫 거래일 위치, 그 위치 기준 N거래일 뒤 수익률.
+    #   US(주간)는 20거래일 창이 서로 겹치므로 '비겹침'(직전 선택과 20거래일↑ 간격)만 채택 → 독립 표본.
+    #   KR(월간)은 표본 간격이 이미 ≈20거래일이라 전부 사용.
+    STEP = 20
+    recs_rows, last = [], -STEP
     for _, fr in fuel.iterrows():
         pos = int(dts.searchsorted(fr["dt"].to_datetime64()))
         if pos >= len(pv):
             continue
+        if market == "US" and pos - last < STEP:
+            continue                     # 직전 선택 표본과 20거래일 미만 → 창 겹침, 건너뜀
+        last = pos
         row = {"band": fr["band"]}
         for h in HORIZONS:
             row[f"fwd{h}"] = (pv[pos + h] / pv[pos] - 1) if pos + h < len(pv) else None

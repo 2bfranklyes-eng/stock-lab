@@ -150,11 +150,19 @@ const F_BAND_DESC = {
 }
 const F_STAT_ORDER = ['고갈', '부족', '중립', '여유', '풍부', '전체']
 const FUEL_STATS_NOTE = (
-  <>실탄이 <b>풍부</b>할 때 순풍인지, <b>고갈</b>일 때 바닥인지. (실탄은 느린 배경 지표라 참고용)</>
+  <>각 표본 = 실탄 진입 시점(🇺🇸 20거래일 간격 · 🇰🇷 매월초 — 서로 <b>안 겹치는 독립 구간</b>). <b>'이후 N일'</b>은 그 시점부터 <b>N거래일</b>(20일 ≈ 1달) 뒤 시장 수익률이에요.
+    실탄이 <b>풍부</b>할 때 순풍인지, <b>고갈</b>일 때 바닥인지 — 느린 배경 지표라 참고용.</>
 )
 // 실탄 차트 구간 프리셋 — 미국=주간·한국=월간이라 슬라이스 '행 수'가 다름
 const F_RANGES_US = [{ label: '1년', days: 52 }, { label: '3년', days: 156 }, { label: '5년', days: 260 }, { label: '전체', days: Infinity }]
 const F_RANGES_KR = [{ label: '2년', days: 24 }, { label: '5년', days: 60 }, { label: '10년', days: 120 }, { label: '전체', days: Infinity }]
+// 미국 실탄 차트: 순유동성 + 성분(연준자산·재무부계정·역레포) 전부 절대 $조 → 실제 금액이라 선 높이 차이가 보임
+const F_US_CHART = [
+  { key: 'raw1', name: '순유동성', color: '#d97706', width: 2.4 },
+  { key: 'c1', name: '연준자산', color: '#2a78d6', width: 1.2 },
+  { key: 'c2', name: '재무부계정', color: '#008300', width: 1.2 },
+  { key: 'c3', name: '역레포', color: '#d55181', width: 1.2 },
+]
 
 // 심리에 큰 충격을 준 굵직한 사건들. 차트 타임라인에 세로 표시선+이모지로만 얹음(선 series 아님).
 // markets: 표시할 시장. 날짜는 대략적 발생일 — 실제 거래일로 스냅해서 그림.
@@ -357,7 +365,7 @@ function Gauge({ value, band, lowLabel, highLabel, desc }) {
 
 // 커스텀 툴팁: 각 성분의 점수(0~100)와 함께 '실제 수치'(config.raw 정의 시)를 보여줌.
 //   예) 금리  4.45%  95 — 굵은 값=실제 국고채10년, 옅은 값=점수. (사용자 혼동 "금리:95" 해소)
-function ChartTooltip({ active, payload, label, config, market, mainKey }) {
+function ChartTooltip({ active, payload, label, config, market, mainKey, valueFmt = null }) {
   if (!active || !payload || !payload.length) return null
   const point = payload[0].payload
   const order = config.map((c) => c.key)
@@ -375,7 +383,9 @@ function ChartTooltip({ active, payload, label, config, market, mainKey }) {
         return (
           <div key={e.dataKey} className={'tip-row' + (e.dataKey === mainKey ? ' main' : '')}>
             <span className="tip-name"><i style={{ background: e.color }} />{e.name}</span>
-            <span className="tip-val">{rawStr && <b>{rawStr}</b>}<em>{Math.round(e.value)}</em></span>
+            <span className="tip-val">
+              {valueFmt ? <b>{valueFmt(e.value)}</b> : (<>{rawStr && <b>{rawStr}</b>}<em>{Math.round(e.value)}</em></>)}
+            </span>
           </div>
         )
       })}
@@ -386,7 +396,7 @@ function ChartTooltip({ active, payload, label, config, market, mainKey }) {
 
 // 공용 추이 차트: 종합선 + 성분선 + 구간선택 + 이벤트선 + 커스텀 범례.
 //   config[0] = 종합(범례 맨 앞, z축 맨 위). mainKey = 종합 dataKey.
-function TrendChart({ series, config, market, title, refLines, note, mainKey, ranges = RANGES, defaultRange = 756 }) {
+function TrendChart({ series, config, market, title, refLines, note, mainKey, ranges = RANGES, defaultRange = 756, yDomain = [0, 100], valueFmt = null }) {
   const [range, setRange] = useState(defaultRange)   // 기본 3년(또는 지정값)
   const [hidden, setHidden] = useState(() => new Set())
   const toggle = (k) => setHidden((h) => {
@@ -410,8 +420,8 @@ function TrendChart({ series, config, market, title, refLines, note, mainKey, ra
         <LineChart data={shown} margin={{ top: 18, right: 8, left: -22, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
           <XAxis dataKey="dt" tick={{ fontSize: 10 }} minTickGap={48} />
-          <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} />
-          <Tooltip content={(props) => <ChartTooltip {...props} config={config} market={market} mainKey={mainKey} />}
+          <YAxis domain={yDomain} tick={{ fontSize: 10 }} width={valueFmt ? 34 : undefined} />
+          <Tooltip content={(props) => <ChartTooltip {...props} config={config} market={market} mainKey={mainKey} valueFmt={valueFmt} />}
             wrapperStyle={{ outline: 'none' }} />
           {refLines.map((r) => (
             <ReferenceLine key={r.y} y={r.y} stroke={r.color} strokeDasharray="4 4" />
@@ -468,7 +478,7 @@ function MarketBody({ latest, series, stats, market }) {
   )
 }
 
-function StatsCard({ stats, order = STAT_ORDER, note = SENT_STATS_NOTE }) {
+function StatsCard({ stats, order = STAT_ORDER, note = SENT_STATS_NOTE, countLabel = '일수' }) {
   const [h, setH] = useState(20)
   if (!stats || stats.length === 0) return null
   const byBand = Object.fromEntries(stats.map((s) => [s.band, s]))
@@ -481,7 +491,7 @@ function StatsCard({ stats, order = STAT_ORDER, note = SENT_STATS_NOTE }) {
         ))}
       </div>
       <table className="stats">
-        <thead><tr><th>밴드</th><th>일수</th><th>이후{h}일</th><th>승률</th></tr></thead>
+        <thead><tr><th>밴드</th><th>{countLabel}</th><th>이후{h}일</th><th>승률</th></tr></thead>
         <tbody>
           {order.map((bd) => {
             const s = byBand[bd]
@@ -772,14 +782,24 @@ function FuelBody({ latest, series, stats, market }) {
       <p className="col-date">{latest.dt} 기준{monthly && <span className="freq-badge">월간</span>}</p>
       <Gauge value={latest.f_score} band={b} lowLabel="고갈" highLabel="풍부" desc={F_BAND_DESC[b.name]} />
       <FuelFigures latest={latest} market={market} />
-      <TrendChart
-        series={series} config={fSeries(market)} market={market} mainKey="f_score"
-        title="F(t) 실탄 추이"
-        ranges={market === 'US' ? F_RANGES_US : F_RANGES_KR} defaultRange={Infinity}
-        refLines={[{ y: 80, color: '#1e8449' }, { y: 20, color: '#c0392b' }]}
-        note={<>굵은 <b style={{ color: '#d97706' }}>주황</b>이 종합 실탄, 얇은 3선은 성분(각 0~100, 높을수록 유입). {monthly && <b>한국은 월간 데이터예요.</b>}</>}
-      />
-      <StatsCard stats={stats} order={F_STAT_ORDER} note={FUEL_STATS_NOTE} />
+      {market === 'US' ? (
+        <TrendChart
+          series={series} config={F_US_CHART}
+          market={market} mainKey="raw1" title="실탄 절대 추이 ($조)"
+          ranges={F_RANGES_US} defaultRange={Infinity}
+          yDomain={['auto', 'auto']} valueFmt={(v) => `$${v.toFixed(2)}T`} refLines={[]}
+          note={<>전부 <b>실제 달러($조)</b>예요. 굵은 주황 <b>순유동성</b> = 연준자산 − 재무부계정 − 역레포. 성분 선 높이가 다른 게 진짜 금액 차이(연준 ~$6.7조 vs 재무부 ~$0.8조). 위 게이지(0~100)는 순유동성의 <b>과거 대비 위치</b>.</>}
+        />
+      ) : (
+        <TrendChart
+          series={series} config={fSeries(market)} market={market} mainKey="f_score"
+          title="F(t) 실탄 추이"
+          ranges={F_RANGES_KR} defaultRange={Infinity}
+          refLines={[{ y: 80, color: '#1e8449' }, { y: 20, color: '#c0392b' }]}
+          note={<>굵은 <b style={{ color: '#d97706' }}>주황</b>이 종합 실탄, 얇은 3선은 성분(각 0~100, 높을수록 유입). <b>한국은 월간·단위가 달라(%·원) 절대금액 합산이 안 돼</b> 백분위로 봅니다.</>}
+        />
+      )}
+      <StatsCard stats={stats} order={F_STAT_ORDER} note={FUEL_STATS_NOTE} countLabel={monthly ? '개월' : '표본'} />
     </>
   )
 }
