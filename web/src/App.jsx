@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   LineChart, Line, XAxis, YAxis, Tooltip,
   ResponsiveContainer, ReferenceLine, CartesianGrid,
@@ -892,9 +892,22 @@ const CMP_LINES = [
 function ComparisonChart({ rows, market }) {
   const [range, setRange] = useState(756)
   const [hidden, setHidden] = useState(() => new Set())
+  const [pmode, setPmode] = useState('raw')   // raw=실제주가 / mom=추세이탈(125일 평균 대비 %)
   const toggle = (k) => setHidden((h) => { const n = new Set(h); n.has(k) ? n.delete(k) : n.add(k); return n })
-  const shown = range === Infinity ? rows : rows.slice(-range)
+  // 주가 추세이탈 = 125일 이동평균 대비 %. 추세를 걷어내 평균회귀형으로 → 지수와 동행이 눈에 보임.
+  const data = useMemo(() => {
+    const out = []
+    let sum = 0
+    for (let i = 0; i < rows.length; i++) {
+      sum += rows[i].px
+      if (i >= 125) sum -= rows[i - 125].px
+      out.push({ ...rows[i], mom: i >= 124 ? (rows[i].px / (sum / 125) - 1) * 100 : null })
+    }
+    return out
+  }, [rows])
+  const shown = range === Infinity ? data : data.slice(-range)
   const events = eventsFor(market, shown)
+  const isMom = pmode === 'mom'
   return (
     <section className="card">
       <h2>주가 vs 지수 겹쳐보기</h2>
@@ -903,21 +916,30 @@ function ComparisonChart({ rows, market }) {
           <button key={r.label} className={range === r.days ? 'on' : ''} onClick={() => setRange(r.days)}>{r.label}</button>
         ))}
       </div>
+      <div className="seg">
+        <button className={!isMom ? 'on' : ''} onClick={() => setPmode('raw')}>실제 주가</button>
+        <button className={isMom ? 'on' : ''} onClick={() => setPmode('mom')}>추세이탈</button>
+      </div>
       <ResponsiveContainer width="100%" height={288}>
         <LineChart data={shown} margin={{ top: 18, right: 2, left: -24, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
           <XAxis dataKey="dt" tick={{ fontSize: 10 }} minTickGap={48} />
           <YAxis yAxisId="idx" domain={[0, 100]} tick={{ fontSize: 10 }} />
           <YAxis yAxisId="px" orientation="right" domain={['auto', 'auto']} width={46} tick={{ fontSize: 9 }}
-            tickFormatter={(v) => Math.round(v).toLocaleString()} />
-          <Tooltip formatter={(v, name) => [name === '주가' ? Math.round(v).toLocaleString() : Math.round(v), name]} />
+            tickFormatter={(v) => isMom ? `${Math.round(v)}%` : Math.round(v).toLocaleString()} />
+          <Tooltip formatter={(v, name) => [name.startsWith('주가')
+            ? (isMom ? `${v > 0 ? '+' : ''}${v.toFixed(1)}%` : Math.round(v).toLocaleString())
+            : Math.round(v), name]} />
+          {isMom && <ReferenceLine yAxisId="px" y={0} stroke="#94a3b8" strokeDasharray="3 3" />}
           {events.map((e) => (
             <ReferenceLine key={e.dt + e.label} yAxisId="idx" x={e.x} stroke="#b0b4ba" strokeDasharray="2 3"
               label={{ value: e.emoji, position: 'top', fontSize: 11 }} />
           ))}
           {CMP_LINES.map((s) => (
-            <Line key={s.key} yAxisId={s.axis} type="monotone" dataKey={s.key} name={s.name} stroke={s.color}
-              dot={false} strokeWidth={s.width} strokeOpacity={s.axis === 'px' ? 1 : 0.8}
+            <Line key={s.key} yAxisId={s.axis} type="monotone"
+              dataKey={s.key === 'px' ? (isMom ? 'mom' : 'px') : s.key}
+              name={s.key === 'px' ? (isMom ? '주가(추세이탈)' : '주가') : s.name}
+              stroke={s.color} dot={false} strokeWidth={s.width} strokeOpacity={s.axis === 'px' ? 1 : 0.8}
               hide={hidden.has(s.key)} isAnimationActive={false} connectNulls />
           ))}
         </LineChart>
@@ -925,11 +947,17 @@ function ComparisonChart({ rows, market }) {
       <div className="chart-legend">
         {CMP_LINES.map((s) => (
           <button key={s.key} className={hidden.has(s.key) ? 'off' : ''} onClick={() => toggle(s.key)}>
-            <span className="swatch" style={{ background: s.color, height: s.axis === 'px' ? 4 : 2 }} />{s.name}
+            <span className="swatch" style={{ background: s.color, height: s.axis === 'px' ? 4 : 2 }} />
+            {s.key === 'px' && isMom ? '주가(추세이탈)' : s.name}
           </button>
         ))}
       </div>
-      <p className="note">검은 굵은선 = <b>실제 주가</b>(오른쪽 축), 색선 = 지수 0~100(왼쪽 축). <b>지수 고점·저점이 주가 전환과 맞물리는지</b> 보세요. 범례로 켜고 끌 수 있어요.</p>
+      <p className="note">
+        {isMom
+          ? <>검은선 = <b>주가 추세이탈</b>(125일 평균 대비 %, 오른축). 추세를 걷어내니 <b>심리 지수와 함께 출렁이는 게</b> 보여요.</>
+          : <>검은 굵은선 = <b>실제 주가</b>(오른축), 색선 = 지수 0~100(왼축). <b>추세이탈</b>로 바꾸면 심리와의 동행이 더 잘 보여요.</>}
+        {' '}범례로 켜고 끌 수 있어요.
+      </p>
     </section>
   )
 }
