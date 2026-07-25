@@ -110,6 +110,9 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   .event-tip b { color: #f1f5f9; }
   .weights .wname { color: #e2e8f0; }
   .weights .wpct { color: #f1f5f9; }
+  .outlook .ocells b { color: #f1f5f9; }
+  .outlook .owarn { background: #2a1f07; border-color: #78350f; color: #fcd34d; }
+  .outlook .owarn b { color: #fde68a; }
   .freq-badge { background: #78350f; color: #fde68a; }
 }
 
@@ -151,6 +154,19 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .weights .whint { font-size: 11px; color: #94a3b8; flex: none; }
 .stats .bdot { display: inline-block; width: 8px; height: 8px; border-radius: 2px;
   margin-right: 7px; vertical-align: middle; }
+.stats .runs { display: block; font-size: 10px; color: #94a3b8; font-weight: 400; }
+
+/* ── 전망 카드 ── */
+/* 경고를 숫자와 같은 무게로 둔다 — 근거가 국면 몇 개인지가 평균값만큼 중요하다. */
+.outlook .ocells { display: flex; gap: 10px; margin: 4px 0 12px; }
+.outlook .ocells > div { flex: 1; min-width: 0; text-align: center; padding: 11px 6px;
+  background: var(--track); border-radius: 12px; }
+.outlook .ocells span { display: block; font-size: 11px; color: #94a3b8; margin-bottom: 5px; }
+.outlook .ocells b { font-size: 19px; font-weight: 800; color: #111827;
+  font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.outlook .owarn { font-size: 11.5px; line-height: 1.7; color: #92400e; background: #fffbeb;
+  border: 1px solid #fde68a; border-radius: 10px; padding: 9px 11px; }
+.outlook .owarn b { color: #78350f; }
 
 @media (max-width: 720px) {
   .weights .whint { display: none; }

@@ -268,12 +268,15 @@ const MIX_FACTORS = [
   { key: 'f', name: '실탄', color: '#d55181', table: 'fuel_index', col: 'f_score',
     invert: false, hint: '풍부할수록 유리' },
 ]
-// 비겹침 표본으로 양 시장에서 함께 검증한 값들. '추천'이 미국·한국 어느 쪽도 크게 지지 않는 절충안.
+// 기본은 '배경만'(심리 0). 심리는 4성분이 거의 다 주가 파생(모멘텀 = 지수÷125일평균)이라,
+// 넣으면 "주가로 주가를 설명"하는 꼴이 되고 선행성도 오히려 떨어진다.
+//   배경 3요인의 주가 선행 상관(+60일): US 0.41 / KR 0.47   ← 심리 포함시 0.36 / 0.29
+// 기간을 반으로 갈라도 4개 구간 전부에서 같은 방향으로 살아남은 건 '배경만'뿐이었다.
 const MIX_PRESETS = [
-  { name: '추천', w: { s: 20, l: 25, i: 30, f: 25 } },
-  { name: '동일가중', w: { s: 25, l: 25, i: 25, f: 25 } },
-  { name: '물가 중심', w: { s: 15, l: 20, i: 40, f: 25 } },
-  { name: '유동성·실탄', w: { s: 15, l: 35, i: 20, f: 30 } },
+  { name: '배경만', w: { s: 0, l: 35, i: 35, f: 35 } },
+  { name: '심리 포함', w: { s: 20, l: 25, i: 30, f: 25 } },
+  { name: '물가 중심', w: { s: 0, l: 25, i: 50, f: 25 } },
+  { name: '유동성·실탄', w: { s: 0, l: 40, i: 20, f: 40 } },
 ]
 const MIX_BANDS = [
   { name: '매우 불리', color: '#c0392b' }, { name: '불리', color: '#e59866' },
@@ -1265,8 +1268,9 @@ function CompositeSection() {
       <header>
         <h1>종합</h1>
         <p className="lead">
-          네 요인(심리·유동성·물가·실탄)을 <b>내가 정한 비율</b>로 합쳐 하나의 점수로 봅니다.
-          <b> 슬라이더를 움직이면 그래프와 통계가 바로 다시 계산</b>돼요.
+          <b>주가와 무관한 배경 요인</b>(유동성·물가·실탄)을 내가 정한 비율로 합쳐 하나의 점수로.
+          이 요인들은 주가보다 <b>관성이 커서</b>, 앞으로 두 달쯤을 가늠하는 데 쓸 수 있어요.
+          <b> 슬라이더를 움직이면 전망·그래프·통계가 바로 다시 계산</b>됩니다.
         </p>
       </header>
 
@@ -1382,13 +1386,18 @@ function CompositeColumn({ market, flag, name, w, inv }) {
 
   const stats = useMemo(() => {
     const main = PRICE_LINES[market][0].key       // 대표 지수(미국 S&P500 / 한국 코스피)
-    const buckets = MIX_BANDS.map((b) => ({ band: b, n: 0, sum: 0, win: 0 }))
+    // runs = 연속 구간 수. 'n일'은 통계처럼 보이지만 붙어있는 날은 사실상 한 사건이라,
+    // 실제 근거가 몇 개인지 같이 세어 보여준다(n=394일이 국면 8개인 경우가 실제로 있었음).
+    const buckets = MIX_BANDS.map((b) => ({ band: b, n: 0, sum: 0, win: 0, runs: 0 }))
+    let prev = -1
     for (let k = 0; k + h < data.length; k++) {
       const a = data[k][main], z = data[k + h][main]
       if (a == null || z == null) continue
-      const ret = (z / a - 1) * 100
-      const b = buckets[Math.min(4, Math.floor(data[k].mix / 20))]
-      b.n++; b.sum += ret; if (ret > 0) b.win++
+      const bi = Math.min(4, Math.floor(data[k].mix / 20))
+      const b = buckets[bi]
+      if (bi !== prev) b.runs++
+      prev = bi
+      b.n++; b.sum += (z / a - 1) * 100; if (z > a) b.win++
     }
     return buckets
   }, [data, h, market])
@@ -1405,6 +1414,7 @@ function CompositeColumn({ market, flag, name, w, inv }) {
           <p className="col-date">{latest.dt} 기준</p>
           <Gauge value={latest.mix} band={mixBandOf(latest.mix)} lowLabel="불리" highLabel="유리"
             desc={MIX_BAND_DESC[mixBandOf(latest.mix).name]} />
+          <OutlookCard data={data} market={market} />
           <MixChart data={data} market={market} />
           <section className="card">
             <h2>종합점수 밴드별 '이후 {h}일' 수익률</h2>
@@ -1424,7 +1434,7 @@ function CompositeColumn({ market, flag, name, w, inv }) {
                     <tr key={b.band.name}>
                       <td><span className="bdot" style={{ background: b.band.color }} />
                         {k * 20}~{k * 20 + 20} {b.band.name}</td>
-                      <td>{b.n}</td>
+                      <td>{b.n}<span className="runs">국면 {b.runs}</span></td>
                       <td style={{ color, fontWeight: avg > 2 || avg < 0 ? 700 : 400 }}>
                         {avg > 0 ? '+' : ''}{avg.toFixed(1)}%
                       </td>
@@ -1436,12 +1446,97 @@ function CompositeColumn({ market, flag, name, w, inv }) {
             </table>
             <p className="note">
               지금 비율로 <b>과거 전체를 다시 계산</b>한 결과예요. 위로 갈수록 수익률이 높아지면
-              그 비율이 국면을 잘 가른다는 뜻입니다. (표본이 겹쳐 있어 참고용)
+              그 비율이 국면을 잘 가른다는 뜻입니다.
+            </p>
+            <p className="note">
+              ⚠️ <b>'일수'가 아니라 '국면 수'를 보세요.</b> 붙어있는 날들은 사실상 한 사건이라,
+              300일이어도 국면이 5개면 근거는 <b>5개</b>입니다. 국면이 한 자릿수면 우연일 수 있어요.
             </p>
           </section>
         </>
       )}
     </div>
+  )
+}
+
+// 전망 카드 — '지금과 비슷한 배경이었던 과거'의 이후 수익률 분포.
+// 점 예측이 아니라 분포로 낸다. 배경지수의 절대 수준은 시대별로 이동해서(2016년의 60과
+// 2025년의 60이 다름) 고정 임계값은 기간을 갈랐을 때 무너졌다 — '지난 3년 중 몇 %'로만 통했다.
+// 60일 지평인 이유: 요인 지속성이 20일 .93 / 60일 .78인데 120일부터 물가가 .27로 무너진다.
+const OUTLOOK_H = 60
+const OUTLOOK_WIN = 756      // 백분위 기준 창 = 3년
+const OUTLOOK_NEAR = 12      // '비슷한 위치'로 볼 백분위 허용 오차(%p)
+
+function OutlookCard({ data, market }) {
+  const out = useMemo(() => {
+    const main = PRICE_LINES[market][0].key
+    // 각 시점의 '지난 3년 중 백분위' — 그 시점까지의 과거만 사용(미래 정보 없음)
+    const p = new Array(data.length).fill(null)
+    for (let i = 0; i < data.length; i++) {
+      const from = Math.max(0, i - OUTLOOK_WIN)
+      let cnt = 0, n = 0
+      for (let j = from; j < i; j++) { if (data[j].mix < data[i].mix) cnt++; n++ }
+      if (n >= 250) p[i] = (cnt / n) * 100
+    }
+    const cur = p[p.length - 1]
+    if (cur == null) return null
+    const rets = [], idxs = []
+    for (let i = 0; i + OUTLOOK_H < data.length; i++) {
+      if (p[i] == null || Math.abs(p[i] - cur) > OUTLOOK_NEAR) continue
+      const a = data[i][main], z = data[i + OUTLOOK_H][main]
+      if (a == null || z == null) continue
+      rets.push((z / a - 1) * 100); idxs.push(i)
+    }
+    if (rets.length < 30) return { cur, n: rets.length, thin: true }
+    let runs = 0
+    idxs.forEach((v, k) => { if (k === 0 || v - idxs[k - 1] > 5) runs++ })
+    const s = [...rets].sort((a, b) => a - b)
+    const q = (x) => s[Math.min(s.length - 1, Math.floor(s.length * x))]
+    return { cur, n: rets.length, runs,
+      avg: rets.reduce((a, b) => a + b, 0) / rets.length,
+      win: (rets.filter((r) => r > 0).length / rets.length) * 100,
+      p10: q(0.1), p90: q(0.9), worst: s[0], best: s[s.length - 1] }
+  }, [data, market])
+
+  if (!out) return null
+  // cur = '지난 3년 값 중 몇 %가 오늘보다 낮은가'. 높을수록 유리한 점수이므로
+  // 위쪽이면 '상위 N%', 아래쪽이면 '하위 N%'로 읽어야 방향을 헷갈리지 않는다.
+  const pos = out.cur >= 50
+    ? { label: `상위 ${Math.round(100 - out.cur)}%`, good: true }
+    : { label: `하위 ${Math.round(out.cur)}%`, good: false }
+  if (out.thin) {
+    return (
+      <section className="card">
+        <h2>🔮 {OUTLOOK_H}일 전망</h2>
+        <p className="note">지금과 비슷한 배경이었던 과거가 {out.n}일뿐이라 통계를 낼 수 없어요.
+          비율을 바꾸거나 데이터가 더 쌓이길 기다려야 합니다.</p>
+      </section>
+    )
+  }
+  const tone = out.avg > 3 ? '#1e8449' : out.avg < 0 ? '#c0392b' : '#334155'
+  return (
+    <section className="card outlook">
+      <h2>🔮 {OUTLOOK_H}일 전망</h2>
+      <p className="cap">
+        지금 배경은 지난 3년 중 <b style={{ color: pos.good ? '#1e8449' : '#c0392b' }}>{pos.label}</b>
+        {pos.good ? ' (우호적인 편)' : ' (우호적이지 않은 편)'}.
+        과거 <b>비슷한 위치</b>였을 때 이후 {OUTLOOK_H}일은 —
+      </p>
+      <div className="ocells">
+        <div><span>평균</span><b style={{ color: tone }}>{out.avg > 0 ? '+' : ''}{out.avg.toFixed(1)}%</b></div>
+        <div><span>올랐던 비율</span><b>{Math.round(out.win)}%</b></div>
+        <div><span>흔한 범위</span><b>{out.p10.toFixed(0)}~{out.p90.toFixed(0)}%</b></div>
+      </div>
+      <div className="owarn">
+        <b>근거는 {out.runs}개 국면입니다</b> ({out.n}일이지만 붙어있는 날은 한 사건).
+        최악 {out.worst.toFixed(0)}% · 최고 {out.best.toFixed(0)}%까지 있었어요.
+        {out.runs < 10 && <> 국면이 {out.runs}개면 <b>우연일 수 있는 수준</b>입니다.</>}
+      </div>
+      <p className="note">
+        평균 하나만 보지 마세요. <b>'흔한 범위'가 실제로 겪을 폭</b>이고, 그마저 10번 중 2번은 벗어납니다.
+        이건 <b>비슷한 배경에서 과거에 이랬다</b>는 기록이지 앞으로의 약속이 아니에요.
+      </p>
+    </section>
   )
 }
 
@@ -1465,19 +1560,26 @@ function CompositeMethod() {
         네 요인을 <b>같은 방향(높을수록 유리)</b>으로 맞춘 뒤 비율대로 평균낸 값. 0~100.
       </p>
       <ul>
-        <li><b>😨 심리</b> — <b>반전</b>. 공포일수록 유리(역발상). 극단공포−극단탐욕 이후20일 🇺🇸+5.3%p 🇰🇷+3.5%p.</li>
         <li><b>💧 유동성</b> — 정방향. 돈이 풀렸을수록 유리.</li>
-        <li><b>🔥 물가</b> — <b>반전</b>. 저물가일수록 유리. 네 요인 중 이후수익률과 가장 일관되게 붙습니다(🇺🇸-0.22 🇰🇷-0.17).</li>
+        <li><b>🔥 물가</b> — <b>반전</b>. 저물가일수록 유리.</li>
         <li><b>💰 실탄</b> — 정방향. 증시로 들어올 돈이 많을수록 유리.</li>
+        <li><b>😨 심리</b> — <b>기본값 0</b>. 아래 이유로 뺐지만 슬라이더로 넣어볼 수 있어요.</li>
       </ul>
       <p className="note">
-        기본 비율 <b>20·25·30·25</b>는 미국·한국 양쪽에서 비겹침 표본으로 검증해 고른 절충안이에요.
-        미국만 보면 '물가 중심', 한국만 보면 '유동성·실탄'이 더 나은데 <b>한쪽에 맞추면 다른 쪽이 나빠져서</b>,
-        어느 쪽도 크게 지지 않는 값을 골랐습니다.
+        <b>왜 심리를 뺐나</b> — 심리는 4성분이 거의 다 <b>주가로 만들어져</b> 있어요(모멘텀 = 지수÷125일평균,
+        위험선호 = 주식−채권, 시장폭 = 지수−지수). 넣으면 <b>주가로 주가를 설명</b>하는 꼴이 됩니다.
+        실제로 심리를 빼니 주가 선행 상관(+60일)이 🇺🇸 0.36→<b>0.41</b>, 🇰🇷 0.29→<b>0.47</b>로 올라갔어요.
+        심리는 <b>"지금 상태"</b>를 재는 데 쓰고(동시점 상관 0.5), <b>"앞으로"</b>는 배경 3요인에 맡깁니다.
       </p>
       <p className="note">
-        ⚠️ 이건 <b>예측기가 아니라 국면 측정기</b>예요. 표본이 거시 국면 10개 남짓이라
-        "매우 유리"가 다음에도 같으리란 보장은 없습니다. 비율을 바꿔가며 <b>어떤 조합이 과거를 잘 갈랐는지</b> 보는 도구로 쓰세요.
+        <b>왜 60일인가</b> — 요인이 얼마나 오래 관성을 갖는지가 예측 지평을 정합니다.
+        유동성은 60일 뒤에도 0.78, 실탄 0.75로 버티지만 120일부터 물가가 0.27로 무너져요.
+        참고로 <b>주가 추세는 60일이면 0.17</b>까지 떨어집니다 — 배경이 주가보다 훨씬 오래 갑니다.
+      </p>
+      <p className="note">
+        ⚠️ <b>절대 점수가 아니라 상대 위치로 보세요.</b> 기간을 반으로 갈라 검증했더니
+        "60점 이상이면 유리" 같은 고정 기준은 무너졌지만(🇰🇷 전반 -1.3% / 후반 +24.2%),
+        <b>"지난 3년 중 상위 30%"</b>는 미국·한국 네 구간 전부에서 통했어요. 전망 카드가 이 방식을 씁니다.
       </p>
     </section>
   )
