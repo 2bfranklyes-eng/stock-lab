@@ -12,7 +12,8 @@ jobs:
     env:
       SUPABASE_URL: https://hffuxqijuoempxeblddx.supabase.co
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-      ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}   # 한국 국내 금리(국고채·회사채) 수집용
+      ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}   # 한국 국내 금리(국고채·회사채) + 실탄(M2·수급) 수집용
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}   # 미국 실탄(Fed 순유동성) 수집용
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,3 +27,5 @@ jobs:
       - run: python backtest.py      # 심리 밴드별 통계 → backtest_stats
       - run: python liquidity_backtest.py  # 유동성 밴드별 통계 → liquidity_backtest_stats
       - run: python inflation_backtest.py  # 물가 밴드별 통계 → inflation_backtest_stats
+      - run: python fuel.py          # F(t) 실탄 지수 (미국 주간 FRED / 한국 월간 ECOS) → fuel_index
+      - run: python fuel_backtest.py  # 실탄 밴드별 통계 → fuel_backtest_stats

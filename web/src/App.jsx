@@ -119,6 +119,43 @@ const INF_STATS_NOTE = (
   <>물가가 <b>눌릴(저물가)</b> 때 순풍인지, <b>달아오를(고물가)</b> 때 역풍인지. 20거래일 ≈ 1달. (표본 적어 참고용)</>
 )
 
+// 실탄 지수 F(t): 증시 자금유입/실탄 풍부도. 성분은 시장별로 달라 라벨을 시장별로 매핑.
+//   US(주간): 연준자산 / 재무부계정 / 역레포   |   KR(월간): M2증가율 / 외국인 / 개인
+function fSeries(market) {
+  const comp = market === 'US'
+    ? [['c1', '연준자산'], ['c2', '재무부계정'], ['c3', '역레포']]
+    : [['c1', 'M2증가율'], ['c2', '외국인'], ['c3', '개인']]
+  const colors = ['#2a78d6', '#008300', '#d55181']
+  return [
+    { key: 'f_score', name: '실탄(종합)', color: '#d97706', width: 2.2 },
+    ...comp.map(([k, n], i) => ({ key: k, name: n, color: colors[i], width: 1.3 })),
+  ]
+}
+const F_BANDS = [
+  { name: '고갈', color: '#c0392b' }, { name: '부족', color: '#e59866' },
+  { name: '중립', color: '#95a5a6' }, { name: '여유', color: '#52b788' },
+  { name: '풍부', color: '#1e8449' },
+]
+function fuelBandOf(v) {
+  if (v < 20) return F_BANDS[0]
+  if (v < 40) return F_BANDS[1]
+  if (v < 60) return F_BANDS[2]
+  if (v < 80) return F_BANDS[3]
+  return F_BANDS[4]
+}
+const F_BAND_DESC = {
+  고갈: '증시로 들어올 돈이 마른 상태.', 부족: '자금 유입이 약한 분위기.',
+  중립: '자금 흐름이 평범한 상태.', 여유: '증시로 돈이 들어오는 분위기.',
+  풍부: '자금이 넘쳐 유입되는 상태.',
+}
+const F_STAT_ORDER = ['고갈', '부족', '중립', '여유', '풍부', '전체']
+const FUEL_STATS_NOTE = (
+  <>실탄이 <b>풍부</b>할 때 순풍인지, <b>고갈</b>일 때 바닥인지. (실탄은 느린 배경 지표라 참고용)</>
+)
+// 실탄 차트 구간 프리셋 — 미국=주간·한국=월간이라 슬라이스 '행 수'가 다름
+const F_RANGES_US = [{ label: '1년', days: 52 }, { label: '3년', days: 156 }, { label: '5년', days: 260 }, { label: '전체', days: Infinity }]
+const F_RANGES_KR = [{ label: '2년', days: 24 }, { label: '5년', days: 60 }, { label: '10년', days: 120 }, { label: '전체', days: Infinity }]
+
 // 심리에 큰 충격을 준 굵직한 사건들. 차트 타임라인에 세로 표시선+이모지로만 얹음(선 series 아님).
 // markets: 표시할 시장. 날짜는 대략적 발생일 — 실제 거래일로 스냅해서 그림.
 const EVENTS = [
@@ -167,6 +204,7 @@ const TABS = [
   { key: 'sent', label: '시장심리', emoji: '😨' },
   { key: 'liq', label: '유동성', emoji: '💧' },
   { key: 'inf', label: '물가', emoji: '🔥' },
+  { key: 'fuel', label: '실탄', emoji: '💰' },
 ]
 
 export default function App() {
@@ -184,6 +222,7 @@ export default function App() {
       {tab === 'sent' && <SentimentSection />}
       {tab === 'liq' && <LiquiditySection />}
       {tab === 'inf' && <InflationSection />}
+      {tab === 'fuel' && <FuelSection />}
     </div>
   )
 }
@@ -347,8 +386,8 @@ function ChartTooltip({ active, payload, label, config, market, mainKey }) {
 
 // 공용 추이 차트: 종합선 + 성분선 + 구간선택 + 이벤트선 + 커스텀 범례.
 //   config[0] = 종합(범례 맨 앞, z축 맨 위). mainKey = 종합 dataKey.
-function TrendChart({ series, config, market, title, refLines, note, mainKey }) {
-  const [range, setRange] = useState(756)   // 기본 3년
+function TrendChart({ series, config, market, title, refLines, note, mainKey, ranges = RANGES, defaultRange = 756 }) {
+  const [range, setRange] = useState(defaultRange)   // 기본 3년(또는 지정값)
   const [hidden, setHidden] = useState(() => new Set())
   const toggle = (k) => setHidden((h) => {
     const n = new Set(h)
@@ -362,7 +401,7 @@ function TrendChart({ series, config, market, title, refLines, note, mainKey }) 
     <section className="card">
       <h2>{title}</h2>
       <div className="seg">
-        {RANGES.map((r) => (
+        {ranges.map((r) => (
           <button key={r.label} className={range === r.days ? 'on' : ''}
             onClick={() => setRange(r.days)}>{r.label}</button>
         ))}
@@ -702,6 +741,119 @@ function InflationMethod() {
       <p className="note">
         각 재료를 <b>지난 1년 중 몇 %ile</b>인지로 0~100 환산 → <b>4개 평균</b> → 10일 평활.
         절대 수준이 아니라 <b>지난 1년 대비 물가 압력</b>이라, 실제 CPI보다 방향 전환을 먼저 잡아요.
+      </p>
+    </section>
+  )
+}
+
+// ── 실탄 섹션 (증시 자금유입; 미국 주간 FRED / 한국 월간 ECOS) ──
+function FuelFigures({ latest, market }) {
+  const items = market === 'US'
+    ? [['순유동성', latest.raw1 == null ? '—' : `$${latest.raw1.toFixed(2)}T`],
+       ['역레포', latest.raw2 == null ? '—' : `$${Math.round(latest.raw2)}B`]]
+    : [['M2 증가율', latest.raw1 == null ? '—' : `${latest.raw1.toFixed(1)}%`],
+       ['외국인 순매수(월)', latest.raw2 == null ? '—' : Math.round(latest.raw2).toLocaleString()]]
+  return (
+    <div className="raw-figs">
+      {items.map(([label, val]) => (
+        <div key={label} className="raw-fig">
+          <span className="rf-label">{label}</span><span className="rf-val">{val}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function FuelBody({ latest, series, stats, market }) {
+  const b = fuelBandOf(latest.f_score)
+  const monthly = latest.freq === 'M'
+  return (
+    <>
+      <p className="col-date">{latest.dt} 기준{monthly && <span className="freq-badge">월간</span>}</p>
+      <Gauge value={latest.f_score} band={b} lowLabel="고갈" highLabel="풍부" desc={F_BAND_DESC[b.name]} />
+      <FuelFigures latest={latest} market={market} />
+      <TrendChart
+        series={series} config={fSeries(market)} market={market} mainKey="f_score"
+        title="F(t) 실탄 추이"
+        ranges={market === 'US' ? F_RANGES_US : F_RANGES_KR} defaultRange={Infinity}
+        refLines={[{ y: 80, color: '#1e8449' }, { y: 20, color: '#c0392b' }]}
+        note={<>굵은 <b style={{ color: '#d97706' }}>주황</b>이 종합 실탄, 얇은 3선은 성분(각 0~100, 높을수록 유입). {monthly && <b>한국은 월간 데이터예요.</b>}</>}
+      />
+      <StatsCard stats={stats} order={F_STAT_ORDER} note={FUEL_STATS_NOTE} />
+    </>
+  )
+}
+
+function FuelColumn({ market, flag, name }) {
+  const [series, setSeries] = useState([])
+  const [latest, setLatest] = useState(null)
+  const [stats, setStats] = useState([])
+  const [state, setState] = useState('loading')
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('fuel_index')
+          .select('dt,f_score,band,c1,c2,c3,raw1,raw2,freq')
+          .eq('market', market).order('dt', { ascending: true })
+        if (error) throw error
+        if (!alive) return
+        if (!data || data.length === 0) { setState('empty'); return }
+        setSeries(data); setLatest(data[data.length - 1]); setState('ok')
+        const { data: bt } = await supabase.from('fuel_backtest_stats').select('*').eq('market', market)
+        if (alive && bt) setStats(bt)
+      } catch (e) {
+        if (!alive) return
+        const msg = `${e?.message || ''} ${e?.code || ''}`
+        setState(/exist|find the table|PGRST205|42P01/i.test(msg) ? 'empty' : 'error')
+      }
+    })()
+    return () => { alive = false }
+  }, [market])
+  return (
+    <div className="col">
+      <div className="col-head">{flag} <b>{name}</b></div>
+      {state === 'loading' && <div className="col-msg">불러오는 중…</div>}
+      {state === 'error' && <div className="col-msg">데이터를 불러오지 못했어요</div>}
+      {state === 'empty' && <div className="col-msg soon">🚧<br /><b>데이터 준비 중</b></div>}
+      {state === 'ok' && latest && <FuelBody latest={latest} series={series} stats={stats} market={market} />}
+    </div>
+  )
+}
+
+function FuelSection() {
+  return (
+    <>
+      <header>
+        <h1>실탄</h1>
+        <p className="lead">
+          증시로 <b>실제 들어올 수 있는 돈</b>이 얼마나 되는지 0~100 점수로.
+          유동성이 <b>돈의 값</b>이라면 이건 <b>돈의 양·유입</b>이에요. <b>(미국 주간 · 한국 월간)</b>
+        </p>
+      </header>
+      <div className="cols">
+        <FuelColumn market="US" flag="🇺🇸" name="미국" />
+        <div className="divider" />
+        <FuelColumn market="KR" flag="🇰🇷" name="한국" />
+      </div>
+      <FuelMethod />
+    </>
+  )
+}
+
+function FuelMethod() {
+  return (
+    <section className="card method">
+      <h2>💰 실탄(F), 어떻게 만드나요?</h2>
+      <p className="cap">"증시에 투입될 수 있는 돈"을 시장별로 재서 합친 값. 높을수록 실탄 풍부(유입).</p>
+      <ul>
+        <li><b>🇺🇸 미국 (주간)</b> — Fed 순유동성 = 연준 총자산 − 재무부계정(TGA) − 역레포(RRP). 연준이 푼 돈 중 시중에 도는 부분.</li>
+        <li><b>🇰🇷 한국 (월간)</b> — M2 증가율 + 외국인 순매수 + 개인 순매수. 돈의 양 + 실제 수급.</li>
+      </ul>
+      <p className="note">
+        각 재료를 <b>과거 대비 몇 %ile</b>인지로 0~100 환산 → 평균 → 평활.
+        <b> ⚠️ 한국은 일간 예탁금·외국인 데이터 접근이 막혀 월간 ECOS(통화량·투자자 순매수)로 대체</b>해요 — 미국(주간)보다 느립니다.
       </p>
     </section>
   )

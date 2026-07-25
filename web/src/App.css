@@ -107,6 +107,7 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   .chart-tip .tip-date, .chart-tip .tip-row.main .tip-name { color: #e2e8f0; }
   .chart-tip .tip-name { color: #94a3b8; }
   .chart-tip .tip-val b { color: #f1f5f9; }
+  .freq-badge { background: #78350f; color: #fde68a; }
 }
 
 /* ── 차트 커스텀 툴팁 (성분 점수 0~100 + 실제 수치) ── */
@@ -123,3 +124,7 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .chart-tip .tip-val b { color: #111827; font-weight: 700; margin-right: 7px; }
 .chart-tip .tip-val em { color: #94a3b8; font-style: normal; font-variant-numeric: tabular-nums; }
 .chart-tip .tip-foot { margin-top: 7px; font-size: 10px; color: #94a3b8; line-height: 1.4; }
+
+/* 빈도 뱃지 (한국 실탄 '월간' 표시) */
+.freq-badge { display: inline-block; margin-left: 7px; padding: 1px 8px; font-size: 10px; font-weight: 700;
+  border-radius: 999px; background: #fde68a; color: #92400e; vertical-align: middle; letter-spacing: .02em; }
