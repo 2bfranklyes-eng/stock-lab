@@ -44,12 +44,19 @@ const SERIES = [
 ]
 
 // 유동성 지수 L(t): 종합 + 4성분 (높을수록 완화). 색은 심리와 같은 검증 팔레트.
+// raw(point, market): 툴팁에 띄울 '실제 수치'(점수 0~100과 별개). liquidity_daily에 저장된
+//   raw_* 컬럼에서 읽음 — KR은 raw_us10y=국고채10년, raw_dxy=신용스프레드로 의미가 다름에 주의.
+const wonFmt = (v) => (v == null ? null : Math.round(v).toLocaleString() + '원')
 const L_SERIES = [
   { key: 'l_score', name: '유동성(종합)', color: '#d97706', width: 2.2 },
-  { key: 'c_rate', name: '금리', color: '#2a78d6', width: 1.3 },
-  { key: 'c_curve', name: '일드커브', color: '#008300', width: 1.3 },
-  { key: 'c_fx', name: '환율', color: '#d55181', width: 1.3 },
-  { key: 'c_credit', name: '신용', color: '#4a3aa7', width: 1.3 },
+  { key: 'c_rate', name: '금리', color: '#2a78d6', width: 1.3,
+    raw: (p) => (p.raw_us10y == null ? null : p.raw_us10y.toFixed(2) + '%') },
+  { key: 'c_curve', name: '일드커브', color: '#008300', width: 1.3,
+    raw: (p) => (p.raw_curve == null ? null : (p.raw_curve >= 0 ? '+' : '') + p.raw_curve.toFixed(2) + '%p') },
+  { key: 'c_fx', name: '환율', color: '#d55181', width: 1.3,
+    raw: (p, m) => (m === 'US' ? (p.raw_dxy == null ? null : p.raw_dxy.toFixed(1)) : wonFmt(p.raw_usdkrw)) },
+  { key: 'c_credit', name: '신용', color: '#4a3aa7', width: 1.3,
+    raw: (p, m) => (m === 'KR' && p.raw_dxy != null ? p.raw_dxy.toFixed(2) + '%p' : null) },
 ]
 const L_BANDS = [
   { name: '극단긴축', color: '#c0392b' },
@@ -309,6 +316,35 @@ function Gauge({ value, band, lowLabel, highLabel, desc }) {
   )
 }
 
+// 커스텀 툴팁: 각 성분의 점수(0~100)와 함께 '실제 수치'(config.raw 정의 시)를 보여줌.
+//   예) 금리  4.45%  95 — 굵은 값=실제 국고채10년, 옅은 값=점수. (사용자 혼동 "금리:95" 해소)
+function ChartTooltip({ active, payload, label, config, market, mainKey }) {
+  if (!active || !payload || !payload.length) return null
+  const point = payload[0].payload
+  const order = config.map((c) => c.key)
+  const rows = [...payload].sort((a, b) => order.indexOf(a.dataKey) - order.indexOf(b.dataKey))
+  const anyRaw = rows.some((e) => {
+    const c = config.find((x) => x.key === e.dataKey)
+    return c && c.raw && c.raw(point, market) != null
+  })
+  return (
+    <div className="chart-tip">
+      <div className="tip-date">{label}</div>
+      {rows.map((e) => {
+        const cfg = config.find((c) => c.key === e.dataKey)
+        const rawStr = cfg && cfg.raw ? cfg.raw(point, market) : null
+        return (
+          <div key={e.dataKey} className={'tip-row' + (e.dataKey === mainKey ? ' main' : '')}>
+            <span className="tip-name"><i style={{ background: e.color }} />{e.name}</span>
+            <span className="tip-val">{rawStr && <b>{rawStr}</b>}<em>{Math.round(e.value)}</em></span>
+          </div>
+        )
+      })}
+      {anyRaw && <div className="tip-foot">굵은 값 = 실제 수치 · 옅은 값 = 점수(0~100)</div>}
+    </div>
+  )
+}
+
 // 공용 추이 차트: 종합선 + 성분선 + 구간선택 + 이벤트선 + 커스텀 범례.
 //   config[0] = 종합(범례 맨 앞, z축 맨 위). mainKey = 종합 dataKey.
 function TrendChart({ series, config, market, title, refLines, note, mainKey }) {
@@ -336,7 +372,8 @@ function TrendChart({ series, config, market, title, refLines, note, mainKey }) 
           <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
           <XAxis dataKey="dt" tick={{ fontSize: 10 }} minTickGap={48} />
           <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} />
-          <Tooltip formatter={(v, name) => [Math.round(v), name]} />
+          <Tooltip content={(props) => <ChartTooltip {...props} config={config} market={market} mainKey={mainKey} />}
+            wrapperStyle={{ outline: 'none' }} />
           {refLines.map((r) => (
             <ReferenceLine key={r.y} y={r.y} stroke={r.color} strokeDasharray="4 4" />
           ))}
@@ -442,9 +479,11 @@ function StatsCard({ stats, order = STAT_ORDER, note = SENT_STATS_NOTE }) {
 function RawFigures({ latest, market }) {
   const pct = (v) => (v == null ? '—' : `${v.toFixed(2)}%`)
   const num = (v, d = 1) => (v == null ? '—' : v.toLocaleString(undefined, { maximumFractionDigits: d }))
+  const spread = (v) => (v == null ? '—' : `${v.toFixed(2)}%p`)
+  // KR: raw_us10y=국고채10년, raw_dxy=신용스프레드(회사채-국고채) — liquidity.py에서 시장별 의미 다름
   const items = market === 'US'
     ? [['미 10년물 금리', pct(latest.raw_us10y)], ['달러지수(DXY)', num(latest.raw_dxy)]]
-    : [['원/달러', num(latest.raw_usdkrw, 0)], ['미 10년물 금리', pct(latest.raw_us10y)]]
+    : [['원/달러', num(latest.raw_usdkrw, 0)], ['국고채 10년', pct(latest.raw_us10y)], ['신용스프레드', spread(latest.raw_dxy)]]
   return (
     <div className="raw-figs">
       {items.map(([label, val]) => (
@@ -490,7 +529,7 @@ function LiquidityColumn({ market, flag, name }) {
           const to = Math.min(from + PAGE - 1, WANT - 1)
           const { data, error } = await supabase
             .from('liquidity_daily')
-            .select('dt,l_score,band,c_rate,c_curve,c_fx,c_credit,raw_us10y,raw_dxy,raw_usdkrw')
+            .select('dt,l_score,band,c_rate,c_curve,c_fx,c_credit,raw_us10y,raw_dxy,raw_usdkrw,raw_curve')
             .eq('market', market)
             .order('dt', { ascending: false })
             .range(from, to)
@@ -622,10 +661,10 @@ function MethodCard() {
 
 function LiquidityMethod() {
   const ing = [
-    ['💵 금리', '정책·시장금리가 낮을수록 완화 (미 10년물)'],
-    ['📐 일드커브', '장단기 금리차 — 가파를수록 완화적'],
+    ['💵 금리', '정책·시장금리가 낮을수록 완화 (미국 10년물, 한국 국고채10년)'],
+    ['📐 일드커브', '장단기 금리차 — 가파를수록 완화적 (미국 10년-3개월, 한국 국고채 10년-3년)'],
     ['💱 환율', '통화 강세 = 자금 유입 (미국 달러지수, 한국 원/달러)'],
-    ['🏦 신용', '하이일드 스프레드 좁을수록 완화 (HYG/IEI)'],
+    ['🏦 신용', '신용스프레드 좁을수록 완화 (미국 HYG/IEI, 한국 회사채-국고채)'],
   ]
   return (
     <section className="card method">

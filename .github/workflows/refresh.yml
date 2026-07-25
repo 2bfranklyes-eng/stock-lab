@@ -12,6 +12,7 @@ jobs:
     env:
       SUPABASE_URL: https://hffuxqijuoempxeblddx.supabase.co
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}   # 한국 국내 금리(국고채·회사채) 수집용
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

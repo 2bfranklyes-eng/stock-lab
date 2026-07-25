@@ -16,7 +16,8 @@ except Exception:
 load_dotenv()
 sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
 
-NEEDED = ["us_10y", "us_3m", "dxy", "hyg", "iei", "kr_bond", "usdkrw"]
+NEEDED = ["us_10y", "us_3m", "dxy", "hyg", "iei",       # 미국 유동성
+          "kr_3y", "kr_10y", "kr_corp3y", "usdkrw"]     # 한국 유동성(국내물 + 원/달러)
 
 # 검증용 과거 기준일 (상식과 맞나: 2021 초완화 → 높음, 2022 긴축 → 낮음)
 CHECKS = [("초완화 2021-08", "2021-08-16"),
@@ -56,25 +57,33 @@ def band(v):
 def compute(w, market):
     if market == "US":
         d = w[["us_10y", "us_3m", "dxy", "hyg", "iei"]].dropna()
-        c_rate = 100 - pct_rank(d["us_10y"])          # 금리 높으면 긴축 → 뒤집기
-        c_fx = 100 - pct_rank(d["dxy"])               # 강달러 = 긴축 → 뒤집기
-    else:  # KR
-        d = w[["kr_bond", "us_10y", "us_3m", "dxy", "hyg", "iei", "usdkrw"]].dropna()
-        c_rate = pct_rank(d["kr_bond"])               # 채권가격↑ = 금리↓ = 완화
-        c_fx = 100 - pct_rank(d["usdkrw"])            # 원 약세(원/달러↑) = 긴축 → 뒤집기
-    c_curve = pct_rank(d["us_10y"] - d["us_3m"])      # 커브 가파를수록 완화적 (글로벌)
-    # 신용: HYG/IEI(듀레이션 근접 국채)↑ = 스프레드 좁음 = 완화. LQD는 장기물이라 금리에 오염돼 부적합.
-    c_credit = pct_rank(d["hyg"] / d["iei"])
+        c_rate = 100 - pct_rank(d["us_10y"])              # 미10년물 높으면 긴축 → 뒤집기
+        curve = d["us_10y"] - d["us_3m"]                  # 10년-3개월 (%p)
+        c_curve = pct_rank(curve)                         # 커브 가파를수록 완화적
+        c_fx = 100 - pct_rank(d["dxy"])                   # 강달러 = 긴축 → 뒤집기
+        # 신용: HYG/IEI(듀레이션 근접 국채)↑ = 스프레드 좁음 = 완화. LQD는 장기물이라 금리에 오염돼 부적합.
+        c_credit = pct_rank(d["hyg"] / d["iei"])
+        raw_10y, raw_b, raw_krw = d["us_10y"], d["dxy"], None   # 카드: 미10년물 / DXY
+    else:  # KR — 4성분 전부 국내물(커브·신용까지). 미국·글로벌 영향은 원/달러(c_fx)로 유입.
+        d = w[["kr_3y", "kr_10y", "kr_corp3y", "usdkrw"]].dropna()
+        c_rate = 100 - pct_rank(d["kr_10y"])                    # 국고채10년 높으면 긴축 → 뒤집기
+        curve = d["kr_10y"] - d["kr_3y"]                        # 국고채 10년-3년 (%p)
+        c_curve = pct_rank(curve)                              # 한국 커브 가파를수록 완화적
+        c_fx = 100 - pct_rank(d["usdkrw"])                     # 원 약세(원/달러↑) = 긴축 → 뒤집기
+        spread = d["kr_corp3y"] - d["kr_3y"]                   # 회사채-국고채 신용스프레드
+        c_credit = 100 - pct_rank(spread)                     # 스프레드 넓을수록 신용경색=긴축 → 뒤집기
+        raw_10y, raw_b, raw_krw = d["kr_10y"], spread, d["usdkrw"]  # 카드: 국고채10년 / 신용스프레드 / 원달러
 
     L = pd.concat([c_rate, c_curve, c_fx, c_credit], axis=1).mean(axis=1).ewm(span=10).mean()
     out = pd.DataFrame({"l_score": L, "c_rate": c_rate, "c_curve": c_curve,
                         "c_fx": c_fx, "c_credit": c_credit}).dropna()
     out["band"] = out["l_score"].map(band)
-    # 헤드라인 원자재료 수치(수치 카드용) — anon은 indicator_raw 못 읽으니 여기 함께 저장
-    raw = d.reindex(out.index)
-    out["raw_us10y"] = raw["us_10y"]
-    out["raw_dxy"] = raw["dxy"]
-    out["raw_usdkrw"] = raw["usdkrw"] if "usdkrw" in raw.columns else float("nan")
+    # 헤드라인 원자료 수치(카드용) — anon은 indicator_raw 못 읽으니 여기 함께 저장.
+    # ⚠️ 컬럼명은 US 기준이라 KR에선 의미가 다름: raw_us10y=국고채10년, raw_dxy=신용스프레드(%p).
+    out["raw_us10y"] = raw_10y.reindex(out.index)
+    out["raw_dxy"] = raw_b.reindex(out.index)
+    out["raw_usdkrw"] = raw_krw.reindex(out.index) if raw_krw is not None else float("nan")
+    out["raw_curve"] = curve.reindex(out.index)       # 일드커브 실제값(%p) — 툴팁용(양 시장 공통)
     return out
 
 
@@ -96,7 +105,7 @@ def main(markets):
                  "c_rate": round(float(r.c_rate), 2), "c_curve": round(float(r.c_curve), 2),
                  "c_fx": round(float(r.c_fx), 2), "c_credit": round(float(r.c_credit), 2),
                  "raw_us10y": rnd(r.raw_us10y, 2), "raw_dxy": rnd(r.raw_dxy, 2),
-                 "raw_usdkrw": rnd(r.raw_usdkrw, 2)}
+                 "raw_usdkrw": rnd(r.raw_usdkrw, 2), "raw_curve": rnd(r.raw_curve, 2)}
                 for d, r in out.iterrows()]
         for i in range(0, len(rows), 1000):
             sb.table("liquidity_daily").upsert(rows[i:i + 1000], on_conflict="market,dt").execute()

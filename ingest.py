@@ -2,6 +2,8 @@
 import os
 import sys
 import time
+import json
+import urllib.request
 from dotenv import load_dotenv
 import pandas as pd
 import yfinance as yf
@@ -22,7 +24,8 @@ sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"
 #         kr_kosdaq=코스닥(코스피와의 20일 수익률차 → 위험선호/시장 폭, 미국 RSP-SPY 대응).
 #         (동일가중 KOSPI200 ETF는 시총가중과 상관 0.99로 거의 안 갈라져 노이즈라 코스닥으로 교체)
 #   유동성(L) 지표: us_10y·us_3m(금리·커브), dxy(달러), hyg·lqd(신용 스프레드) → 미국 계정에.
-#     한국 유동성은 이 글로벌 지표 + usdkrw(원/달러) + kr_bond(금리)로 계산.
+#     한국 유동성은 국내물(국고채3·10년, 회사채3년 AA- via ECOS) + usdkrw(원/달러)로 계산.
+#     ↳ 커브(국고채10-3년)·신용(회사채-국고채)까지 국내물로 → 미국 지수와 뚜렷이 갈라짐.
 #   물가(I) 지표: tip·ief(기대인플레=물가연동채/국채), uso(유가), dbc(원자재), dbb(산업금속) → 미국 계정에.
 #     원자재·유가는 글로벌이라 한국 물가에도 그대로 작용. 한국은 여기에 usdkrw(원 약세=수입물가)를 더해 계산.
 JOBS = {
@@ -33,6 +36,17 @@ JOBS = {
            "tip": "TIP", "ief": "IEF", "uso": "USO", "dbc": "DBC", "dbb": "DBB"},
     "KR": {"kr_index": "^KS11", "kr_bond": "148070.KS", "kr_kosdaq": "^KQ11",
            "usdkrw": "USDKRW=X"},
+}
+
+# ── ECOS(한국은행) 시장금리 일별 — 한국 유동성용 국내 금리 (yfinance엔 없음) ──
+# 통계표 817Y002 / 주기 D. 국고채10-3년(커브)·회사채-국고채(신용)를 국내물로 계산하기 위함.
+# indicator_raw.code → indicator_meta.code FK가 있어 메타부터 등록해야 함(run_ecos가 자동 upsert).
+ECOS_KEY = os.environ.get("ECOS_API_KEY", "").strip()
+ECOS_START = "20150101"           # yfinance 수집 시작과 정렬(usdkrw·kr_index 등과 교집합)
+ECOS_ITEMS = {                    # code → (ECOS 817Y002 항목코드, 메타 name, 메타 role)
+    "kr_3y":     ("010200000", "국고채 3년", "rate"),
+    "kr_10y":    ("010210000", "국고채 10년", "rate"),
+    "kr_corp3y": ("010300000", "회사채 3년(AA-)", "credit"),
 }
 
 
@@ -93,8 +107,75 @@ def run(market):
     print(f"[{market}] 완료: 총 {total} rows{tail}")
 
 
+def upsert_ecos_meta():
+    """ECOS 신규 코드를 indicator_meta에 등록(FK 충족). on_conflict=code 라 재실행 안전."""
+    rows = [{"code": code, "name": name, "market": "KR", "category": "유동성",
+             "role": role, "source": f"ecos:817Y002/{item}"}
+            for code, (item, name, role) in ECOS_ITEMS.items()]
+    sb.table("indicator_meta").upsert(rows, on_conflict="code").execute()
+
+
+def fetch_ecos(item, start=ECOS_START):
+    """ECOS 817Y002(시장금리 일별)에서 한 항목의 일별 금리를 페이지네이션으로 수집 → {dt: value}."""
+    end = time.strftime("%Y%m%d")
+    rows, page, size = [], 1, 1000
+    while True:
+        url = (f"https://ecos.bok.or.kr/api/StatisticSearch/{ECOS_KEY}/json/kr/"
+               f"{page}/{page + size - 1}/817Y002/D/{start}/{end}/{item}")
+        with urllib.request.urlopen(url, timeout=30) as r:
+            d = json.loads(r.read().decode("utf-8"))
+        if "RESULT" in d:                          # ECOS 오류(키 오류/데이터 없음 등)
+            print(f"  [KR] ECOS {item}: {d['RESULT'].get('MESSAGE', '오류')}")
+            break
+        page_rows = d.get("StatisticSearch", {}).get("row", [])
+        rows += page_rows
+        if len(page_rows) < size:
+            break
+        page += size
+        time.sleep(0.3)
+    ser = {}                                       # TIME(YYYYMMDD)+DATA_VALUE, 빈값/비수치 방어
+    for r in rows:
+        v, t = r.get("DATA_VALUE", "").strip(), r.get("TIME", "")
+        if v not in ("", "-") and len(t) == 8:
+            try:
+                ser[f"{t[:4]}-{t[4:6]}-{t[6:]}"] = float(v)
+            except ValueError:
+                pass
+    return ser
+
+
+def run_ecos():
+    """ECOS 국내 금리 3종(국고채3·10년, 회사채3년 AA-)을 indicator_raw(market=KR)에 적재."""
+    if not ECOS_KEY:
+        print("[KR] ECOS_API_KEY 없음 — 국내 금리 수집 건너뜀 (한국 유동성 커브·신용 계산 불가)")
+        return
+    upsert_ecos_meta()                             # FK 충족: 신규 코드 메타 먼저 등록
+    total, failed = 0, []
+    for code, (item, _name, _role) in ECOS_ITEMS.items():
+        try:
+            ser = fetch_ecos(item)
+        except Exception as e:
+            failed.append(f"{code}({item})")
+            print(f"  [KR] {code} ({item}): 오류 — {e}")
+            continue
+        if not ser:
+            failed.append(f"{code}({item})")
+            print(f"  [KR] {code} ({item}): 데이터 없음 — 건너뜀")
+            continue
+        upsert([{"market": "KR", "dt": dt, "code": code, "value": v} for dt, v in ser.items()])
+        total += len(ser)
+        print(f"  [KR] {code} ({item}): {len(ser)} rows")
+        time.sleep(0.5)
+    sb.table("ingest_log").insert(
+        {"source": "ecos", "market": "KR", "rows": total,
+         "status": "ok" if not failed else "partial"}).execute()
+    print(f"[KR] ECOS 완료: 총 {total} rows" + (f"  (건너뜀: {', '.join(failed)})" if failed else ""))
+
+
 if __name__ == "__main__":
     # 인자 없으면 미국+한국 둘 다 (크론이 인자 없이 호출). `python ingest.py KR` 로 개별 실행도 가능.
     markets = [a.upper() for a in sys.argv[1:]] or ["US", "KR"]
     for m in markets:
         run(m)
+    if "KR" in markets:                            # 한국 국내 금리(ECOS)는 yfinance 뒤에 별도 수집
+        run_ecos()

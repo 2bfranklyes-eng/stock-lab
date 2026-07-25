@@ -104,4 +104,22 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   .chart-legend button { color: #cbd5e1; }
   .chart-legend button.off { color: #6b7280; }
   .rf-val { color: #e2e8f0; }
+  .chart-tip .tip-date, .chart-tip .tip-row.main .tip-name { color: #e2e8f0; }
+  .chart-tip .tip-name { color: #94a3b8; }
+  .chart-tip .tip-val b { color: #f1f5f9; }
 }
+
+/* ── 차트 커스텀 툴팁 (성분 점수 0~100 + 실제 수치) ── */
+.chart-tip { background: var(--card); border: 1px solid var(--line); border-radius: 9px;
+  padding: 8px 11px; box-shadow: 0 6px 20px rgba(0, 0, 0, .14); font-size: 12px; min-width: 160px; }
+.chart-tip .tip-date { font-weight: 700; color: #334155; margin-bottom: 6px; }
+.chart-tip .tip-row { display: flex; justify-content: space-between; align-items: center;
+  gap: 16px; line-height: 1.7; }
+.chart-tip .tip-row.main { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line); font-weight: 700; }
+.chart-tip .tip-name { display: flex; align-items: center; gap: 6px; color: #64748b; }
+.chart-tip .tip-row.main .tip-name { color: #334155; }
+.chart-tip .tip-name i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.chart-tip .tip-val { white-space: nowrap; }
+.chart-tip .tip-val b { color: #111827; font-weight: 700; margin-right: 7px; }
+.chart-tip .tip-val em { color: #94a3b8; font-style: normal; font-variant-numeric: tabular-nums; }
+.chart-tip .tip-foot { margin-top: 7px; font-size: 10px; color: #94a3b8; line-height: 1.4; }

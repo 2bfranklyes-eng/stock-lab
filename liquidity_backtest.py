@@ -79,7 +79,9 @@ def run(market):
             rec[f"fwd{h}"] = round(float(d[f"fwd{h}"].mean() * 100), 2)
             rec[f"hit{h}"] = round(float((d[f"fwd{h}"] > 0).mean() * 100), 1)
         recs.append(rec)
-    sb.table("liquidity_backtest_stats").upsert(recs, on_conflict="market,band").execute()
+    # delete→insert: 밴드 구성이 바뀌면(예: 극단완화 밴드 소멸) 옛 행이 남지 않게 시장별 전량 교체
+    sb.table("liquidity_backtest_stats").delete().eq("market", market).execute()
+    sb.table("liquidity_backtest_stats").insert(recs).execute()
     print(f"[{market}] liquidity_backtest_stats 적재 완료: {len(recs)}행\n")
 
 
