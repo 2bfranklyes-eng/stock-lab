@@ -30,3 +30,4 @@ jobs:
       - run: python inflation_backtest.py  # 물가 밴드별 통계 → inflation_backtest_stats
       - run: python fuel.py          # F(t) 실탄 지수 (미국 주간 FRED / 한국 월간 ECOS) → fuel_index
       - run: python fuel_backtest.py  # 실탄 밴드별 통계 → fuel_backtest_stats
+      - run: python ai_cycle.py      # AI 사이클 계기판 (반도체 밸류체인 상대강도) → ai_daily

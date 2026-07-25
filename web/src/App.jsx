@@ -253,6 +253,7 @@ const TABS = [
   { key: 'fuel', label: '실탄', emoji: '💰' },
   { key: 'mix', label: '종합', emoji: '🧭' },
   { key: 'cmp', label: '비교', emoji: '📊' },
+  { key: 'ai', label: 'AI 사이클', emoji: '🤖' },
 ]
 
 // ── 종합 탭: 4요인을 비율대로 합쳐 '투자 매력도' 하나로 ──
@@ -317,6 +318,7 @@ export default function App() {
       {tab === 'fuel' && <FuelSection />}
       {tab === 'mix' && <CompositeSection />}
       {tab === 'cmp' && <ComparisonSection />}
+      {tab === 'ai' && <AISection />}
     </div>
   )
 }
@@ -1626,6 +1628,250 @@ function CompositeMethod() {
         ⚠️ <b>절대 점수가 아니라 상대 위치로 보세요.</b> 기간을 반으로 갈라 검증했더니
         "60점 이상이면 유리" 같은 고정 기준은 무너졌지만(🇰🇷 전반 -1.3% / 후반 +24.2%),
         <b>"지난 3년 중 상위 30%"</b>는 미국·한국 네 구간 전부에서 통했어요. 전망 카드가 이 방식을 씁니다.
+      </p>
+    </section>
+  )
+}
+
+// ── AI 사이클 계기판 ──
+// ⚠️ 예측 탭이 아니다. 반도체 실물지표(한국수출·자본재수주·재고·PPI)의 붕괴 예측력을
+// 검증했더니 오경보율 70~82%로 기준선(71%)을 하나도 넘지 못했다(2026-07).
+// 이 탭은 ① 지금 얼마나 쏠려 있나(상대강도) ② 결정적 신호는 지표가 아니라 분기 문서에
+// 있다는 체크리스트 — 두 가지만 담는다.
+const AI_NAMES = [
+  { key: 'sox', rkey: 'r_sox', name: 'SOX 반도체지수', base: 'S&P500 대비', color: '#d97706',
+    fmt: (v) => Math.round(v).toLocaleString() },
+  { key: 'tsmc', rkey: 'r_tsmc', name: 'TSMC', base: '가권 대비', color: '#2a78d6',
+    fmt: (v) => 'NT$' + Math.round(v).toLocaleString() },
+  { key: 'samsung', rkey: 'r_samsung', name: '삼성전자', base: '코스피 대비', color: '#008300',
+    fmt: (v) => Math.round(v).toLocaleString() + '원' },
+  { key: 'hynix', rkey: 'r_hynix', name: 'SK하이닉스', base: '코스피 대비', color: '#d55181',
+    fmt: (v) => Math.round(v).toLocaleString() + '원' },
+]
+
+// 컬럼별 통계 — 결측(거래소 휴장)이 섞여 있어 '값이 있는 날'만으로 계산한다.
+function aiStat(rows, key) {
+  const s = rows.filter((r) => r[key] != null)
+  if (s.length < 130) return null
+  const last = s[s.length - 1][key]
+  const y1 = s.length > 252 ? (last / s[s.length - 253][key] - 1) * 100 : null
+  let hi = -Infinity
+  for (let i = Math.max(0, s.length - 125); i < s.length; i++) hi = Math.max(hi, s[i][key])
+  return { last, y1, fromHi: (last / hi - 1) * 100 }
+}
+
+function AISection() {
+  const [rows, setRows] = useState([])
+  const [state, setState] = useState('loading')
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        let all = [], from = 0
+        for (;;) {
+          const { data, error } = await supabase.from('ai_daily').select('*')
+            .order('dt').range(from, from + 999)
+          if (error) throw error
+          all = all.concat(data || [])
+          if (!data || data.length < 1000) break
+          from += 1000
+        }
+        if (!alive) return
+        if (!all.length) { setState('empty'); return }
+        setRows(all); setState('ok')
+      } catch (e) {
+        if (!alive) return
+        const msg = `${e?.message || ''} ${e?.code || ''}`
+        setState(/exist|find the table|PGRST205|42P01/i.test(msg) ? 'empty' : 'error')
+      }
+    })()
+    return () => { alive = false }
+  }, [])
+
+  return (
+    <>
+      <header>
+        <h1>AI 사이클</h1>
+        <p className="lead">
+          AI 랠리를 이끄는 <b>반도체 밸류체인</b>(미국 SOX · 대만 TSMC · 한국 삼성전자·하이닉스)이
+          자국 지수 대비 <b>얼마나 쏠려 있는지</b>를 봅니다.
+          <b> 예측하지 않습니다</b> — 쏠림의 해소 시점을 알려주는 지표는 검증 결과 없었어요.
+        </p>
+      </header>
+      {state === 'loading' && <div className="col-msg">불러오는 중…</div>}
+      {state === 'error' && <div className="col-msg">데이터를 불러오지 못했어요</div>}
+      {state === 'empty' && (
+        <div className="col-msg soon">🚧<br /><b>데이터 준비 중</b><br /><span>ai_daily 테이블 필요</span></div>
+      )}
+      {state === 'ok' && (
+        <>
+          <AIStatus rows={rows} />
+          <AIChart rows={rows} />
+          <AIChecklist />
+          <AIMethod />
+        </>
+      )}
+    </>
+  )
+}
+
+function AIStatus({ rows }) {
+  const latest = rows[rows.length - 1]
+  return (
+    <section className="card">
+      <h2>현재 상태 <span style={{ fontWeight: 400, color: '#94a3b8' }}>({latest.dt} 기준)</span></h2>
+      <table className="stats">
+        <thead><tr><th>종목</th><th>주가</th><th>1년 수익률</th><th>쏠림 (상대강도, 125일 고점 대비)</th></tr></thead>
+        <tbody>
+          {AI_NAMES.map((n) => {
+            const px = aiStat(rows, n.key)
+            const rel = aiStat(rows, n.rkey)
+            if (!px || !rel) return null
+            const hot = rel.fromHi > -3   // 고점 3% 이내면 쏠림 최고조 부근
+            return (
+              <tr key={n.key}>
+                <td><span className="bdot" style={{ background: n.color }} />{n.name}</td>
+                <td>{n.fmt(px.last)}</td>
+                <td style={{ color: px.y1 > 0 ? '#1e8449' : '#c0392b' }}>
+                  {px.y1 == null ? '—' : `${px.y1 > 0 ? '+' : ''}${px.y1.toFixed(0)}%`}
+                </td>
+                <td style={{ fontWeight: 700, color: hot ? '#c0392b' : '#334155' }}>
+                  {rel.fromHi > 0 ? '+' : ''}{rel.fromHi.toFixed(1)}%
+                  <span style={{ fontWeight: 400, color: '#94a3b8' }}> {n.base}{hot ? ' · 고점권' : ''}</span>
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+      <p className="note">
+        <b>쏠림</b> = 종목÷자국지수 비율이 최근 125일 고점에서 얼마나 내려왔나.
+        <b> 0%에 가까울수록 시장 대비 쏠림이 최고조</b>, 음수가 깊어질수록 식는 중입니다.
+        1년 수익률이 크면서 쏠림이 이미 마이너스면 — 랠리는 컸는데 <b>지수 대비 주도력은 꺾이는 중</b>이란 뜻이에요.
+      </p>
+    </section>
+  )
+}
+
+function AIChart({ rows }) {
+  const [mode, setMode] = useState('rel')     // rel=상대강도 / px=주가
+  const [range, setRange] = useState(756)
+  const [hidden, setHidden] = useState(() => new Set())
+  const [evtTip, setEvtTip] = useState(null)
+  const toggle = (k) => setHidden((h) => { const n = new Set(h); if (n.has(k)) n.delete(k); else n.add(k); return n })
+  const lines = useMemo(() => AI_NAMES.map((n) => ({
+    key: mode === 'rel' ? n.rkey : n.key,
+    name: mode === 'rel' ? `${n.name.split(' ')[0]}(${n.base})` : n.name.split(' ')[0],
+    color: n.color, width: n.key === 'sox' ? 2.2 : 1.4,
+  })), [mode])
+  const shown = range === Infinity ? rows : rows.slice(-range)
+  // 보이는 구간 첫 값=100으로 지수화 — 통화·단위가 달라 절대값 비교가 무의미하다
+  const plotted = useMemo(() => {
+    const first = {}
+    for (const l of lines) {
+      const hit = shown.find((r) => r[l.key] != null)
+      if (hit) first[l.key] = hit[l.key]
+    }
+    return shown.map((r) => {
+      const o = { dt: r.dt }
+      for (const l of lines) o[l.key] = r[l.key] != null && first[l.key] ? (r[l.key] / first[l.key]) * 100 : null
+      return o
+    })
+  }, [shown, lines])
+  const events = eventsFor('US', plotted)
+  return (
+    <section className="card">
+      <h2>{mode === 'rel' ? '상대강도 추이 (자국 지수 대비, 구간 시작=100)' : '주가 추이 (구간 시작=100)'}</h2>
+      <div className="seg">
+        {RANGES.map((r) => (
+          <button key={r.label} className={range === r.days ? 'on' : ''} onClick={() => setRange(r.days)}>{r.label}</button>
+        ))}
+      </div>
+      <div className="seg">
+        <button className={mode === 'rel' ? 'on' : ''} onClick={() => setMode('rel')}>상대강도(지수 대비)</button>
+        <button className={mode === 'px' ? 'on' : ''} onClick={() => setMode('px')}>주가</button>
+      </div>
+      <div className="chart-wrap">
+      <EventTip tip={evtTip} />
+      <ResponsiveContainer width="100%" height={278}>
+        <LineChart data={plotted} margin={{ top: 18, right: 8, left: -18, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
+          <XAxis dataKey="dt" tick={{ fontSize: 10 }} minTickGap={48} />
+          <YAxis domain={['auto', 'auto']} tick={{ fontSize: 10 }} width={40} />
+          <Tooltip formatter={(v, n) => [v == null ? '—' : v.toFixed(1), n]} wrapperStyle={{ outline: 'none' }} />
+          <ReferenceLine y={100} stroke="#94a3b8" strokeDasharray="3 3" />
+          {events.map((e) => (
+            <ReferenceLine key={e.dt + e.label} x={e.x} stroke="#b0b4ba" strokeDasharray="2 3"
+              label={<EventMarker evt={e} setTip={setEvtTip} />} />
+          ))}
+          {lines.map((l) => (
+            <Line key={l.key} type="monotone" dataKey={l.key} name={l.name}
+              stroke={l.color} dot={false} strokeWidth={l.width}
+              hide={hidden.has(l.key)} isAnimationActive={false} connectNulls />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+      </div>
+      <div className="chart-legend">
+        {lines.map((l) => (
+          <button key={l.key} className={hidden.has(l.key) ? 'off' : ''} onClick={() => toggle(l.key)}>
+            <span className="swatch" style={{ background: l.color, height: l.width >= 2 ? 4 : 2 }} />
+            {l.name}
+          </button>
+        ))}
+      </div>
+      <p className="note">
+        {mode === 'rel'
+          ? <><b>상대강도 = 종목 ÷ 자국 지수.</b> 100 위면 그 구간에서 지수를 이기는 중.
+              과거 사이클(2018·2021·2024)에서 <b>상대강도 꺾임은 예고가 아니라 동행</b>이었어요 — 확인용이지 선행 신호가 아닙니다.</>
+          : <>통화가 달라(NT$·원·pt) <b>구간 시작=100으로 지수화</b>했어요. 어느 종목이 더 올랐는지만 비교됩니다.</>}
+        {' '}범례로 켜고 끌 수 있어요.
+      </p>
+    </section>
+  )
+}
+
+function AIChecklist() {
+  const items = [
+    ['🏗️ 하이퍼스케일러 CapEx 가이던스', 'MS·구글·아마존·메타 실적발표. "수요 초과" → "규율 있는(disciplined) 투자"로 언어가 바뀌는 순간이 사실상의 전환 선언'],
+    ['📉 감가상각 연한 변경', '서버 수명을 4→6년으로 늘리는 회계 변경 = GPU 비용을 미래로 미는 것. 이미 일부 시작 — 추가 연장 여부를 10-K/10-Q 주석에서'],
+    ['🧾 엔비디아 매출채권 vs 매출', '매출채권 증가율이 매출 증가율을 계속 앞서면 밀어내기 신호. 분기 10-Q'],
+    ['🔄 순환 조달 구조', '엔비디아→고객사 투자→그 돈으로 GPU 구매. 네오클라우드 회사채 스프레드·GPU 담보대출 조건이 조이는지'],
+    ['📊 AI 매출 ÷ CapEx 갭', '연 수천억$ 투자를 정당화할 최종 매출이 자라는가. GPU는 4~6년이면 소진되는 자산이라 시간 제한이 있는 질문'],
+  ]
+  return (
+    <section className="card method">
+      <h2>📋 분기 체크리스트 — 결정적 신호는 지표가 아니라 문서에</h2>
+      <p className="cap">
+        서브프라임을 미리 본 사람들은 지표가 아니라 <b>원본 문서</b>를 읽었어요.
+        AI 사이클의 전환도 아래 다섯 가지에서 먼저 드러날 가능성이 높습니다 — 분기마다 직접 확인하는 목록입니다.
+      </p>
+      <ul>
+        {items.map(([t, d]) => (
+          <li key={t}><b>{t}</b> — {d}</li>
+        ))}
+      </ul>
+      <p className="note">
+        구조적 시한장치: 닷컴의 광섬유는 20년을 갔지만 <b>GPU는 4~6년이면 소진</b>됩니다.
+        "언젠가 수익화"가 허용되는 시간이 짧고, 감가상각 연장은 그 시계를 억지로 늦추는 행위로 읽힙니다.
+      </p>
+    </section>
+  )
+}
+
+function AIMethod() {
+  return (
+    <section className="card method">
+      <h2>🤖 이 계기판이 말할 수 있는 것 / 없는 것</h2>
+      <ul>
+        <li><b>말할 수 있는 것</b> — 지금 반도체 밸류체인이 자국 시장 대비 얼마나 쏠려 있고, 그 쏠림이 식는 중인지 달아오르는 중인지.</li>
+        <li><b>말할 수 없는 것</b> — 쏠림이 언제 해소될지. 실물 선행지표 후보(한국 수출·자본재 수주·재고·반도체 PPI)를
+          과거 반도체 사이클 고점 9개에 대해 검증한 결과 <b>오경보율 70~82%로, 아무 신호 없는 기준선(71%)을 하나도 넘지 못했어요.</b></li>
+        <li><b>그래서</b> — 이 탭엔 예측 점수가 없습니다. 상태 기술(위 표·차트) + 분기 문서 체크리스트가 전부입니다.</li>
+      </ul>
+      <p className="note">
+        참고: 과거 사이클에서 SOX가 고점 후 12개월 내 -25% 이상 빠질 확률은 <b>29%</b>였습니다 —
+        원래 변동성이 큰 지수라, 쏠림이 높다는 사실만으로 하락을 단정할 수 없어요.
       </p>
     </section>
   )
