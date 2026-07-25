@@ -1,8 +1,15 @@
 # fuel.py — 증시 실탄(자금유입) 지수 F(t) → fuel_index (미국 주간 / 한국 월간)
 # "실제 주식에 투입될 수 있는 돈"을 잰다. 유동성 L(t)가 '돈의 값'이면 이건 '돈의 양·유입'.
-#   US(주간, FRED): Fed 순유동성 = 연준자산(WALCL) − 재무부계정(TGA) − 역레포(RRP). 3성분.
-#   KR(월간, ECOS): M2 증가율 + 외국인 순매수 + 개인 순매수. 3성분.
+#   US(주간, FRED): Fed 순유동성 = 연준자산(WALCL) − 재무부계정(TGA) − 역레포(RRP).
+#   KR(월간, ECOS): M2 증가율 + 외국인 순매수. 2성분.
 #   ⚠️ 한국은 일간 예탁금(KOFIA)·외국인(KRX) 접근이 막혀 월간 ECOS로 대체 — 웹에 '월간' 표시.
+#
+# 한국에서 '개인 순매수'를 뺀 이유: 외국인과 개인은 서로의 거래상대라 상관 -0.64로 거울상이다.
+#   둘을 평균내면 변동폭의 56%가 상쇄돼 사라진다(표준편차 29.3 → 12.8).
+#   실제로 이후60일 상관이 개인 포함 -0.05 → 제외 +0.11 로 뒤집힌다. 신호를 지우고 있었다.
+#
+# c1~c3 단위: 양 시장 모두 0~100 백분위로 통일한다. 미국의 절대금액($조)은 raw1~raw4로 보낸다.
+#   (예전엔 미국만 c1~c3에 절대 $조를 담아, 같은 컬럼이 시장마다 다른 뜻이었다.)
 # 자기완결형: indicator_raw 안 거치고 FRED·ECOS를 직접 호출해 fuel_index에 적재.
 import os
 import sys
@@ -60,14 +67,17 @@ def compute_us():
                       "rrp": rrp.reindex(idx, method="ffill")}).dropna()
     netliq = d["walcl"] - d["tga"] - d["rrp"]    # 절대 순유동성($M) — 실제 달러로 뺀 값(올바른 가중)
     # ⚠️ 성분을 백분위로 등가중 평균하면 달러규모(연준$6.7T vs TGA$0.8T) 차이를 무시해 왜곡.
-    #    → 종합은 '순유동성 절대값의 백분위', 성분(c1~c3)은 '절대 $조'로 저장(차트에 실제 금액 선으로).
+    #    → 종합은 '순유동성 절대값의 백분위'로만 낸다. c1~c3는 표시용 백분위(계산에 안 씀).
     F = pct_rank(netliq, 104).ewm(span=4).mean()  # 종합 = 순유동성($) 백분위 (게이지·밴드용)
     out = pd.DataFrame({"f_score": F,
-                        "c1": d["walcl"] / 1e6,                  # 연준자산($조)
-                        "c2": d["tga"] / 1e6,                    # 재무부계정($조)
-                        "c3": d["rrp"] / 1e6,                    # 역레포($조)
+                        # 성분 백분위(표시용) — 재무부계정·역레포는 늘면 유동성을 빨아들이므로 뒤집는다
+                        "c1": pct_rank(d["walcl"], 104),
+                        "c2": 100 - pct_rank(d["tga"], 104),
+                        "c3": 100 - pct_rank(d["rrp"], 104),
                         "raw1": netliq / 1e6,                    # 순유동성($조)
-                        "raw2": d["rrp"] / 1000}).dropna()       # 역레포($십억, 헤드라인용)
+                        "raw2": d["rrp"] / 1000,                 # 역레포($십억, 헤드라인용)
+                        "raw3": d["walcl"] / 1e6,                # 연준자산($조)
+                        "raw4": d["tga"] / 1e6}).dropna()        # 재무부계정($조)
     return out
 
 
@@ -94,16 +104,18 @@ def compute_kr():
         return None
     m2 = ecos_m("161Y008", "BBGA00")             # M2 말잔
     foreign = ecos_m("901Y055", "S22CC")         # 외국인 순매수(월)
-    indiv = ecos_m("901Y055", "S22CB")           # 개인 순매수(월)
-    d = pd.DataFrame({"m2": m2, "foreign": foreign, "indiv": indiv}).dropna()
+    d = pd.DataFrame({"m2": m2, "foreign": foreign}).dropna()
     m2_yoy = d["m2"].pct_change(12) * 100
     c1 = pct_rank(m2_yoy, 60)                     # M2 증가율↑ = 돈 풀림
     c2 = pct_rank(d["foreign"], 60)              # 외국인 순매수↑ = 유입
-    c3 = pct_rank(d["indiv"], 60)               # 개인 순매수↑ = 유입
-    F = pd.concat([c1, c2, c3], axis=1).mean(axis=1).ewm(span=3).mean()
-    out = pd.DataFrame({"f_score": F, "c1": c1, "c2": c2, "c3": c3,
+    # 개인 순매수(c3)는 외국인과 상관 -0.64인 거울상이라 평균에서 서로 지운다 → 제외(위 주석 참고)
+    F = pd.concat([c1, c2], axis=1).mean(axis=1).ewm(span=3).mean()
+    out = pd.DataFrame({"f_score": F, "c1": c1, "c2": c2,
                         "raw1": m2_yoy,                          # M2 YoY(%)
                         "raw2": d["foreign"]}).dropna()          # 외국인 순매수(월)
+    out["c3"] = None
+    out["raw3"] = None
+    out["raw4"] = None
     return out
 
 
@@ -116,7 +128,8 @@ def save(market, out, freq):
     rows = [{"market": market, "dt": d.strftime("%Y-%m-%d"),
              "f_score": round(float(r.f_score), 2), "band": r.band,
              "c1": rnd(r.c1, 2), "c2": rnd(r.c2, 2), "c3": rnd(r.c3, 2),
-             "raw1": rnd(r.raw1, 2), "raw2": rnd(r.raw2, 2), "freq": freq}
+             "raw1": rnd(r.raw1, 2), "raw2": rnd(r.raw2, 2),
+             "raw3": rnd(r.raw3, 2), "raw4": rnd(r.raw4, 2), "freq": freq}
             for d, r in out.iterrows()]
     # delete→insert: 재실행/빈도변경에도 깔끔히 교체
     sb.table("fuel_index").delete().eq("market", market).execute()

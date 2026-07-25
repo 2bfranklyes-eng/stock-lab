@@ -85,12 +85,19 @@ const LIQ_STATS_NOTE = (
 )
 
 // 물가지수 I(t): 종합 + 4성분 (높을수록 물가↑). 색은 심리·유동성과 같은 검증 팔레트.
+// raw(point, market): 유동성과 같은 방식 — 성분 점수(0~100) 옆에 대응하는 원물 시세를 띄운다.
+//   기대인플레는 미국이 TIP/IEF '비율'이라 자연스러운 단위가 없어 한국(원/달러)만 표시.
+const usdFmt = (v, d = 2) => (v == null ? null : '$' + v.toFixed(d))
 const I_SERIES = [
   { key: 'i_score', name: '물가(종합)', color: '#d97706', width: 2.2 },
-  { key: 'c_be', name: '기대인플레', color: '#2a78d6', width: 1.3 },
-  { key: 'c_energy', name: '에너지', color: '#008300', width: 1.3 },
-  { key: 'c_comm', name: '원자재', color: '#d55181', width: 1.3 },
-  { key: 'c_metal', name: '산업금속', color: '#4a3aa7', width: 1.3 },
+  { key: 'c_be', name: '기대인플레', color: '#2a78d6', width: 1.3,
+    raw: (p, m) => (m === 'KR' ? wonFmt(p.raw_usdkrw) : null) },
+  { key: 'c_energy', name: '에너지', color: '#008300', width: 1.3,
+    raw: (p) => usdFmt(p.raw_wti, 1) },
+  // 식품 = 옥수수·밀·대두 등가중 지수라 자연스러운 단위가 없어 실수치는 생략.
+  { key: 'c_food', name: '식품', color: '#d55181', width: 1.3 },
+  { key: 'c_metal', name: '산업금속', color: '#4a3aa7', width: 1.3,
+    raw: (p) => usdFmt(p.raw_copper) },
 ]
 // 물가는 온도계식: 낮을수록 저물가(파랑)·높을수록 고물가(빨강) — 심리 팔레트와 같은 방향.
 const I_BANDS = [
@@ -122,9 +129,10 @@ const INF_STATS_NOTE = (
 // 실탄 지수 F(t): 증시 자금유입/실탄 풍부도. 성분은 시장별로 달라 라벨을 시장별로 매핑.
 //   US(주간): 연준자산 / 재무부계정 / 역레포   |   KR(월간): M2증가율 / 외국인 / 개인
 function fSeries(market) {
+  // 한국은 '개인 순매수'를 뺐다 — 외국인과 상관 -0.64인 거울상이라 평균에서 서로 지웠음.
   const comp = market === 'US'
     ? [['c1', '연준자산'], ['c2', '재무부계정'], ['c3', '역레포']]
-    : [['c1', 'M2증가율'], ['c2', '외국인'], ['c3', '개인']]
+    : [['c1', 'M2증가율'], ['c2', '외국인']]
   const colors = ['#2a78d6', '#008300', '#d55181']
   return [
     { key: 'f_score', name: '실탄(종합)', color: '#d97706', width: 2.2 },
@@ -157,11 +165,12 @@ const FUEL_STATS_NOTE = (
 const F_RANGES_US = [{ label: '1년', days: 52 }, { label: '3년', days: 156 }, { label: '5년', days: 260 }, { label: '전체', days: Infinity }]
 const F_RANGES_KR = [{ label: '2년', days: 24 }, { label: '5년', days: 60 }, { label: '10년', days: 120 }, { label: '전체', days: Infinity }]
 // 미국 실탄 차트: 순유동성 + 성분(연준자산·재무부계정·역레포) 전부 절대 $조 → 실제 금액이라 선 높이 차이가 보임
+// 절대금액은 raw1~raw4에 있다 (c1~c3는 양 시장 공통으로 0~100 백분위).
 const F_US_CHART = [
   { key: 'raw1', name: '순유동성', color: '#d97706', width: 2.4 },
-  { key: 'c1', name: '연준자산', color: '#2a78d6', width: 1.2 },
-  { key: 'c2', name: '재무부계정', color: '#008300', width: 1.2 },
-  { key: 'c3', name: '역레포', color: '#d55181', width: 1.2 },
+  { key: 'raw3', name: '연준자산', color: '#2a78d6', width: 1.2 },
+  { key: 'raw4', name: '재무부계정', color: '#008300', width: 1.2 },
+  { key: 'raw2b', name: '역레포', color: '#d55181', width: 1.2 },
 ]
 
 // 심리에 큰 충격을 준 굵직한 사건들. 차트 타임라인에 세로 표시선+이모지로만 얹음(선 series 아님).
@@ -195,8 +204,37 @@ function eventsFor(market, series) {
     .filter((e) => e.markets.includes(market))
     .map((e) => ({ ...e, x: snapDt(series, e.dt) }))
     .filter((e) => e.x)
+    // frac = 차트 가로 위치(0~1). 말풍선이 좌우 끝에서 잘리지 않게 기준점을 옮기는 데 씀.
+    .map((e) => ({ ...e, frac: series.findIndex((r) => r.dt === e.x) / Math.max(1, series.length - 1) }))
 }
-const shortDate = (dt) => { const [y, m] = dt.split('-'); return `${y.slice(2)}.${+m}` }
+
+// 이벤트 이모지 마커 — 커서를 대면 사건 이름·날짜가 뜬다.
+// ReferenceLine label에 '함수'가 아니라 '엘리먼트'로 넘긴다: recharts가 cloneElement로
+// viewBox만 주입해줘 evt·setTip이 그대로 살아있고, 컴포넌트 타입이 고정돼 호버 중 리마운트가 없다.
+// (함수로 넘기면 렌더마다 새 타입이 돼 커서 올린 순간 마커가 다시 마운트된다.)
+// 이모지 글자만으론 커서를 맞히기 어려워 투명 사각형으로 판정 범위를 넓힌다.
+function EventMarker({ evt, setTip, viewBox }) {
+  if (!viewBox) return null
+  const top = Math.min(viewBox.y, viewBox.y + (viewBox.height || 0))  // 세로선의 위쪽 끝
+  return (
+    <g style={{ cursor: 'help' }}
+      onMouseEnter={() => setTip({ ...evt, px: viewBox.x, py: top })}
+      onMouseLeave={() => setTip(null)}>
+      <rect x={viewBox.x - 10} y={top - 17} width={20} height={19} fill="transparent" />
+      <text x={viewBox.x} y={top - 4} textAnchor="middle" fontSize={12}>{evt.emoji}</text>
+    </g>
+  )
+}
+
+function EventTip({ tip }) {
+  if (!tip) return null
+  const shift = tip.frac > 0.78 ? '-92%' : tip.frac < 0.22 ? '-8%' : '-50%'
+  return (
+    <div className="event-tip" style={{ left: tip.px, top: tip.py + 4, transform: `translateX(${shift})` }}>
+      <b>{tip.emoji} {tip.label}</b><span>{tip.dt}</span>
+    </div>
+  )
+}
 
 // 밴드표: 이후수익률 기간(거래일) 토글 옵션. backtest_stats 의 fwd{h}/hit{h} 컬럼과 대응.
 const HORIZONS = [5, 10, 20, 30, 60]
@@ -213,8 +251,50 @@ const TABS = [
   { key: 'liq', label: '유동성', emoji: '💧' },
   { key: 'inf', label: '물가', emoji: '🔥' },
   { key: 'fuel', label: '실탄', emoji: '💰' },
+  { key: 'mix', label: '종합', emoji: '🧭' },
   { key: 'cmp', label: '비교', emoji: '📊' },
 ]
+
+// ── 종합 탭: 4요인을 비율대로 합쳐 '투자 매력도' 하나로 ──
+// 방향(invert)은 개념 + 밴드 백테스트 근거로 정했다. 심리는 선형 상관이 약해도(한국 +0.08)
+// 극단에서만 작동하는 역발상 지표라 반전이 맞다(극단공포−극단탐욕 이후20일 US +5.3%p / KR +3.5%p).
+const MIX_FACTORS = [
+  { key: 's', name: '심리', color: '#2a78d6', table: 'sentiment_daily', col: 's_score',
+    invert: true, hint: '공포일수록 유리 (역발상)' },
+  { key: 'l', name: '유동성', color: '#008300', table: 'liquidity_daily', col: 'l_score',
+    invert: false, hint: '완화일수록 유리' },
+  { key: 'i', name: '물가', color: '#4a3aa7', table: 'inflation_daily', col: 'i_score',
+    invert: true, hint: '저물가일수록 유리' },
+  { key: 'f', name: '실탄', color: '#d55181', table: 'fuel_index', col: 'f_score',
+    invert: false, hint: '풍부할수록 유리' },
+]
+// 비겹침 표본으로 양 시장에서 함께 검증한 값들. '추천'이 미국·한국 어느 쪽도 크게 지지 않는 절충안.
+const MIX_PRESETS = [
+  { name: '추천', w: { s: 20, l: 25, i: 30, f: 25 } },
+  { name: '동일가중', w: { s: 25, l: 25, i: 25, f: 25 } },
+  { name: '물가 중심', w: { s: 15, l: 20, i: 40, f: 25 } },
+  { name: '유동성·실탄', w: { s: 15, l: 35, i: 20, f: 30 } },
+]
+const MIX_BANDS = [
+  { name: '매우 불리', color: '#c0392b' }, { name: '불리', color: '#e59866' },
+  { name: '중립', color: '#95a5a6' }, { name: '유리', color: '#52b788' },
+  { name: '매우 유리', color: '#1e8449' },
+]
+function mixBandOf(v) {
+  if (v < 20) return MIX_BANDS[0]
+  if (v < 40) return MIX_BANDS[1]
+  if (v < 60) return MIX_BANDS[2]
+  if (v < 80) return MIX_BANDS[3]
+  return MIX_BANDS[4]
+}
+const MIX_BAND_DESC = {
+  '매우 불리': '네 요인이 모두 역풍 쪽. 역사적으로 드문 구간이에요.',
+  불리: '배경 조건이 우호적이지 않은 상태.',
+  중립: '특별히 유리하지도 불리하지도 않은 평범한 국면.',
+  유리: '배경 조건이 우호적인 상태.',
+  '매우 유리': '네 요인이 모두 순풍 쪽. 역사적으로 드문 구간이에요.',
+}
+const MIX_HORIZONS = [20, 60, 120]
 
 export default function App() {
   const [tab, setTab] = useState('sent')
@@ -232,6 +312,7 @@ export default function App() {
       {tab === 'liq' && <LiquiditySection />}
       {tab === 'inf' && <InflationSection />}
       {tab === 'fuel' && <FuelSection />}
+      {tab === 'mix' && <CompositeSection />}
       {tab === 'cmp' && <ComparisonSection />}
     </div>
   )
@@ -401,6 +482,7 @@ function ChartTooltip({ active, payload, label, config, market, mainKey, valueFm
 function TrendChart({ series, config, market, title, refLines, note, mainKey, ranges = RANGES, defaultRange = 756, yDomain = [0, 100], valueFmt = null }) {
   const [range, setRange] = useState(defaultRange)   // 기본 3년(또는 지정값)
   const [hidden, setHidden] = useState(() => new Set())
+  const [evtTip, setEvtTip] = useState(null)         // 이벤트 이모지에 커서 올렸을 때
   const toggle = (k) => setHidden((h) => {
     const n = new Set(h)
     if (n.has(k)) n.delete(k); else n.add(k)
@@ -418,6 +500,8 @@ function TrendChart({ series, config, market, title, refLines, note, mainKey, ra
             onClick={() => setRange(r.days)}>{r.label}</button>
         ))}
       </div>
+      <div className="chart-wrap">
+      <EventTip tip={evtTip} />
       <ResponsiveContainer width="100%" height={248}>
         <LineChart data={shown} margin={{ top: 18, right: 8, left: -22, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
@@ -430,7 +514,7 @@ function TrendChart({ series, config, market, title, refLines, note, mainKey, ra
           ))}
           {events.map((e) => (
             <ReferenceLine key={e.dt + e.label} x={e.x} stroke="#b0b4ba" strokeDasharray="2 3"
-              label={{ value: e.emoji, position: 'top', fontSize: 11 }} />
+              label={<EventMarker evt={e} setTip={setEvtTip} />} />
           ))}
           {drawOrder.map((s) => (
             <Line key={s.key} type="monotone" dataKey={s.key} name={s.name}
@@ -440,6 +524,7 @@ function TrendChart({ series, config, market, title, refLines, note, mainKey, ra
           ))}
         </LineChart>
       </ResponsiveContainer>
+      </div>
       <div className="chart-legend">
         {config.map((s) => (
           <button key={s.key} className={hidden.has(s.key) ? 'off' : ''} onClick={() => toggle(s.key)}>
@@ -449,16 +534,6 @@ function TrendChart({ series, config, market, title, refLines, note, mainKey, ra
         ))}
       </div>
       <p className="note">{note}</p>
-      {events.length > 0 && (
-        <p className="note events">
-          <b>회색 세로선 = 굵직한 사건:</b>{' '}
-          {events.map((e) => (
-            <span key={e.dt + e.label} style={{ marginRight: 10, whiteSpace: 'nowrap' }}>
-              {e.emoji} {e.label}<span style={{ color: '#9aa0a6' }}> ({shortDate(e.dt)})</span>
-            </span>
-          ))}
-        </p>
-      )}
     </section>
   )
 }
@@ -615,13 +690,33 @@ function LiquidityColumn({ market, flag, name }) {
   )
 }
 
-// ── 물가 섹션 (유동성과 동일 구조, 원자재료 수치 카드는 생략) ──
+// ── 물가 섹션 (유동성과 동일 구조) ──
+// 점수 옆에 원물 시세를 같이 보여준다. 한국은 원/달러(수입물가)가 성분이라 맨 앞에.
+function InflationFigures({ latest, market }) {
+  const wti = latest.raw_wti == null ? '—' : `$${latest.raw_wti.toFixed(1)}`
+  const copper = latest.raw_copper == null ? '—' : `$${latest.raw_copper.toFixed(2)}`
+  const krw = latest.raw_usdkrw == null ? '—' : `${Math.round(latest.raw_usdkrw).toLocaleString()}원`
+  const items = market === 'US'
+    ? [['유가(WTI)', wti], ['구리', copper]]
+    : [['원/달러', krw], ['유가(WTI)', wti], ['구리', copper]]
+  return (
+    <div className="raw-figs">
+      {items.map(([label, val]) => (
+        <div key={label} className="raw-fig">
+          <span className="rf-label">{label}</span><span className="rf-val">{val}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function InflationBody({ latest, series, stats, market }) {
   const b = infBandOf(latest.i_score)
   return (
     <>
       <p className="col-date">{latest.dt} 기준</p>
       <Gauge value={latest.i_score} band={b} lowLabel="저물가" highLabel="고물가" desc={I_BAND_DESC[b.name]} />
+      <InflationFigures latest={latest} market={market} />
       <TrendChart
         series={series} config={I_SERIES} market={market} mainKey="i_score"
         title="I(t) 물가 추이"
@@ -648,7 +743,7 @@ function InflationColumn({ market, flag, name }) {
           const to = Math.min(from + PAGE - 1, WANT - 1)
           const { data, error } = await supabase
             .from('inflation_daily')
-            .select('dt,i_score,band,c_be,c_energy,c_comm,c_metal')
+            .select('dt,i_score,band,c_be,c_energy,c_food,c_metal,raw_wti,raw_copper,raw_usdkrw')
             .eq('market', market)
             .order('dt', { ascending: false })
             .range(from, to)
@@ -736,10 +831,10 @@ function LiquidityMethod() {
 
 function InflationMethod() {
   const ing = [
-    ['📈 기대인플레', '시장이 반영한 물가 — 미국 물가연동채(TIP)÷국채(IEF), 한국 원/달러(수입물가)'],
-    ['🛢️ 에너지', '유가가 오를수록 물가↑ (USO)'],
-    ['🌾 원자재', '원자재 바스켓이 오를수록 물가↑ (DBC)'],
-    ['🔩 산업금속', '구리 등 실물 수요가 강할수록 물가↑ (DBB)'],
+    ['📈 기대인플레', '시장이 반영한 물가 — 물가연동채(TIP)÷국채(IEF). 글로벌 공통'],
+    ['🛢️ 에너지', '유가가 오를수록 물가↑ (WTI 원유)'],
+    ['🌾 식품', '곡물이 오를수록 밥상물가↑ (옥수수·밀·대두 등가중)'],
+    ['🔩 산업금속', '구리 등 실물 수요가 강할수록 물가↑ (구리 선물)'],
   ]
   return (
     <section className="card method">
@@ -753,6 +848,14 @@ function InflationMethod() {
       <p className="note">
         각 재료를 <b>지난 1년 중 몇 %ile</b>인지로 0~100 환산 → <b>4개 평균</b> → 10일 평활.
         절대 수준이 아니라 <b>지난 1년 대비 물가 압력</b>이라, 실제 CPI보다 방향 전환을 먼저 잡아요.
+      </p>
+      <p className="note">
+        재료는 ETF가 아니라 <b>원물 시세</b>(WTI·곡물·구리 선물)를 씁니다. 선물 롤오버 ETF(USO 등)는
+        콘탱고에서 가격이 계속 깎여, 2015~2026 유가가 <b>+70%</b> 오르는 동안 USO는 <b>-14%</b>였어요 — 물가 대리변수가 못 됩니다.
+      </p>
+      <p className="note">
+        🇰🇷 한국은 같은 원자재를 <b>원화로 환산</b>해서 봅니다. 실제로 치르는 값이 원화 기준이라,
+        원 약세면 같은 유가라도 체감 물가가 오르니까요.
       </p>
     </section>
   )
@@ -817,12 +920,14 @@ function FuelColumn({ market, flag, name }) {
       try {
         const { data, error } = await supabase
           .from('fuel_index')
-          .select('dt,f_score,band,c1,c2,c3,raw1,raw2,freq')
+          .select('dt,f_score,band,c1,c2,c3,raw1,raw2,raw3,raw4,freq')
           .eq('market', market).order('dt', { ascending: true })
         if (error) throw error
         if (!alive) return
         if (!data || data.length === 0) { setState('empty'); return }
-        setSeries(data); setLatest(data[data.length - 1]); setState('ok')
+        // raw2는 헤드라인 카드용 $십억 → 차트는 다른 선과 단위를 맞추려 $조로 환산해 둔다
+        const rows = data.map((r) => ({ ...r, raw2b: r.raw2 == null ? null : r.raw2 / 1000 }))
+        setSeries(rows); setLatest(rows[rows.length - 1]); setState('ok')
         const { data: bt } = await supabase.from('fuel_backtest_stats').select('*').eq('market', market)
         if (alive && bt) setStats(bt)
       } catch (e) {
@@ -871,43 +976,97 @@ function FuelMethod() {
       <p className="cap">"증시에 투입될 수 있는 돈"을 시장별로 재서 합친 값. 높을수록 실탄 풍부(유입).</p>
       <ul>
         <li><b>🇺🇸 미국 (주간)</b> — Fed 순유동성 = 연준 총자산 − 재무부계정(TGA) − 역레포(RRP). 연준이 푼 돈 중 시중에 도는 부분.</li>
-        <li><b>🇰🇷 한국 (월간)</b> — M2 증가율 + 외국인 순매수 + 개인 순매수. 돈의 양 + 실제 수급.</li>
+        <li><b>🇰🇷 한국 (월간)</b> — M2 증가율 + 외국인 순매수. 돈의 양 + 실제 수급.</li>
       </ul>
       <p className="note">
         각 재료를 <b>과거 대비 몇 %ile</b>인지로 0~100 환산 → 평균 → 평활.
         <b> ⚠️ 한국은 일간 예탁금·외국인 데이터 접근이 막혀 월간 ECOS(통화량·투자자 순매수)로 대체</b>해요 — 미국(주간)보다 느립니다.
       </p>
+      <p className="note">
+        한국에서 <b>개인 순매수는 뺐습니다</b> — 외국인과 서로의 거래상대라 상관 <b>-0.64</b>인 거울상이라,
+        같이 평균내면 변동폭의 <b>56%가 상쇄돼</b> 신호가 사라졌어요.
+      </p>
     </section>
   )
 }
 
-// ── 비교 섹션: 실제 주가에 대표 지수(심리·유동성·실탄)를 겹쳐 봄 (듀얼 Y축) ──
-const CMP_LINES = [
-  { key: 'px', name: '주가', color: '#111827', width: 2, axis: 'px' },
-  { key: 's', name: '심리', color: '#2a78d6', width: 1.3, axis: 'idx' },
-  { key: 'l', name: '유동성', color: '#008300', width: 1.3, axis: 'idx' },
-  { key: 'f', name: '실탄', color: '#d55181', width: 1.3, axis: 'idx' },
+// ── 비교 섹션: 실제 주가에 대표 지수(심리·유동성·물가·실탄)를 겹쳐 봄 (듀얼 Y축) ──
+// 우리 지수(0~100)는 검증 팔레트(파랑·초록·보라·분홍), 주가는 무채색+갈색 계열로 묶어
+// "주가 한 덩어리 vs 지수들"이 한눈에 갈리게 한다. price_daily.code 와 key가 1:1.
+const PRICE_LINES = {
+  US: [
+    { key: 'us_index', name: 'S&P500', color: '#111827', width: 2 },
+    { key: 'us_nasdaq', name: '나스닥', color: '#6b7280', width: 1.4 },
+    { key: 'us_dow', name: '다우', color: '#b45309', width: 1.4 },
+  ],
+  KR: [
+    { key: 'kr_index', name: '코스피', color: '#111827', width: 2 },
+    { key: 'kr_kosdaq', name: '코스닥', color: '#b45309', width: 1.4 },
+  ],
+}
+const IDX_LINES = [
+  { key: 's', name: '심리', color: '#2a78d6', width: 1.3 },
+  { key: 'l', name: '유동성', color: '#008300', width: 1.3 },
+  { key: 'i', name: '물가', color: '#4a3aa7', width: 1.3 },
+  { key: 'f', name: '실탄', color: '#d55181', width: 1.3 },
+]
+
+// 주가 표시 방식. 지수마다 절대 수준이 크게 달라(다우 5.2만 vs S&P 7.4천, 코스피 6.7천 vs 코스닥 748)
+// 실제값을 한 축에 겹치면 낮은 지수가 바닥에 눌려 안 보인다 → 기본은 '지수화'.
+const PMODES = [
+  { key: 'base', label: '지수화(시작=100)' },
+  { key: 'raw', label: '실제 주가' },
+  { key: 'mom', label: '추세이탈' },
 ]
 
 function ComparisonChart({ rows, market }) {
   const [range, setRange] = useState(756)
   const [hidden, setHidden] = useState(() => new Set())
-  const [pmode, setPmode] = useState('raw')   // raw=실제주가 / mom=추세이탈(125일 평균 대비 %)
-  const toggle = (k) => setHidden((h) => { const n = new Set(h); n.has(k) ? n.delete(k) : n.add(k); return n })
-  // 주가 추세이탈 = 125일 이동평균 대비 %. 추세를 걷어내 평균회귀형으로 → 지수와 동행이 눈에 보임.
-  const data = useMemo(() => {
-    const out = []
-    let sum = 0
-    for (let i = 0; i < rows.length; i++) {
-      sum += rows[i].px
-      if (i >= 125) sum -= rows[i - 125].px
-      out.push({ ...rows[i], mom: i >= 124 ? (rows[i].px / (sum / 125) - 1) * 100 : null })
-    }
-    return out
-  }, [rows])
-  const shown = range === Infinity ? data : data.slice(-range)
-  const events = eventsFor(market, shown)
+  const [pmode, setPmode] = useState('base')  // base=지수화 / raw=실제주가 / mom=추세이탈
+  const [evtTip, setEvtTip] = useState(null)  // 이벤트 이모지에 커서 올렸을 때
+  const toggle = (k) => setHidden((h) => { const n = new Set(h); if (n.has(k)) n.delete(k); else n.add(k); return n })
+  const pxLines = PRICE_LINES[market]
   const isMom = pmode === 'mom'
+  const isBase = pmode === 'base'
+
+  // 추세이탈 = 125일 이동평균 대비 %. 추세를 걷어내 평균회귀형으로 → 지수와 동행이 눈에 보임.
+  // 지수마다 상장·휴장일이 달라 값이 빈 날이 있어, 이동평균은 '값이 있는 날'만 세어 계산한다.
+  const data = useMemo(() => rows.map((r, i) => {
+    const o = { ...r }
+    for (const l of pxLines) {
+      let sum = 0, n = 0
+      for (let j = Math.max(0, i - 124); j <= i; j++) {
+        const v = rows[j][l.key]
+        if (v != null) { sum += v; n++ }
+      }
+      o['mom_' + l.key] = r[l.key] != null && n >= 60 ? (r[l.key] / (sum / n) - 1) * 100 : null
+    }
+    return o
+  }), [rows, pxLines])
+
+  const shown = range === Infinity ? data : data.slice(-range)
+  // 지수화: 보이는 구간의 첫 값을 100으로. 구간을 바꾸면 기준도 따라 바뀐다(그 구간 안의 상대 성과).
+  const plotted = useMemo(() => {
+    if (!isBase) return shown
+    const first = {}
+    for (const l of pxLines) {
+      const hit = shown.find((r) => r[l.key] != null)
+      if (hit) first[l.key] = hit[l.key]
+    }
+    return shown.map((r) => {
+      const o = { ...r }
+      for (const l of pxLines) {
+        o['base_' + l.key] = r[l.key] != null && first[l.key] ? (r[l.key] / first[l.key]) * 100 : null
+      }
+      return o
+    })
+  }, [shown, isBase, pxLines])
+
+  const events = eventsFor(market, plotted)
+  const pxKey = (k) => (isBase ? 'base_' + k : isMom ? 'mom_' + k : k)
+  const pxFmt = (v) => (v == null ? '—'
+    : isMom ? `${v > 0 ? '+' : ''}${v.toFixed(1)}%`
+    : isBase ? v.toFixed(1) : Math.round(v).toLocaleString())
   return (
     <section className="card">
       <h2>주가 vs 지수 겹쳐보기</h2>
@@ -917,45 +1076,57 @@ function ComparisonChart({ rows, market }) {
         ))}
       </div>
       <div className="seg">
-        <button className={!isMom ? 'on' : ''} onClick={() => setPmode('raw')}>실제 주가</button>
-        <button className={isMom ? 'on' : ''} onClick={() => setPmode('mom')}>추세이탈</button>
+        {PMODES.map((m) => (
+          <button key={m.key} className={pmode === m.key ? 'on' : ''} onClick={() => setPmode(m.key)}>{m.label}</button>
+        ))}
       </div>
+      <div className="chart-wrap">
+      <EventTip tip={evtTip} />
       <ResponsiveContainer width="100%" height={288}>
-        <LineChart data={shown} margin={{ top: 18, right: 2, left: -24, bottom: 0 }}>
+        <LineChart data={plotted} margin={{ top: 18, right: 2, left: -24, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
           <XAxis dataKey="dt" tick={{ fontSize: 10 }} minTickGap={48} />
           <YAxis yAxisId="idx" domain={[0, 100]} tick={{ fontSize: 10 }} />
           <YAxis yAxisId="px" orientation="right" domain={['auto', 'auto']} width={46} tick={{ fontSize: 9 }}
-            tickFormatter={(v) => isMom ? `${Math.round(v)}%` : Math.round(v).toLocaleString()} />
-          <Tooltip formatter={(v, name) => [name.startsWith('주가')
-            ? (isMom ? `${v > 0 ? '+' : ''}${v.toFixed(1)}%` : Math.round(v).toLocaleString())
-            : Math.round(v), name]} />
+            tickFormatter={(v) => (isMom ? `${Math.round(v)}%` : Math.round(v).toLocaleString())} />
+          <Tooltip formatter={(v, name) => [
+            pxLines.some((l) => l.name === name) ? pxFmt(v) : Math.round(v), name]} />
           {isMom && <ReferenceLine yAxisId="px" y={0} stroke="#94a3b8" strokeDasharray="3 3" />}
+          {isBase && <ReferenceLine yAxisId="px" y={100} stroke="#94a3b8" strokeDasharray="3 3" />}
           {events.map((e) => (
             <ReferenceLine key={e.dt + e.label} yAxisId="idx" x={e.x} stroke="#b0b4ba" strokeDasharray="2 3"
-              label={{ value: e.emoji, position: 'top', fontSize: 11 }} />
+              label={<EventMarker evt={e} setTip={setEvtTip} />} />
           ))}
-          {CMP_LINES.map((s) => (
-            <Line key={s.key} yAxisId={s.axis} type="monotone"
-              dataKey={s.key === 'px' ? (isMom ? 'mom' : 'px') : s.key}
-              name={s.key === 'px' ? (isMom ? '주가(추세이탈)' : '주가') : s.name}
-              stroke={s.color} dot={false} strokeWidth={s.width} strokeOpacity={s.axis === 'px' ? 1 : 0.8}
+          {pxLines.map((s) => (
+            <Line key={s.key} yAxisId="px" type="monotone" dataKey={pxKey(s.key)} name={s.name}
+              stroke={s.color} dot={false} strokeWidth={s.width}
+              hide={hidden.has(s.key)} isAnimationActive={false} connectNulls />
+          ))}
+          {IDX_LINES.map((s) => (
+            <Line key={s.key} yAxisId="idx" type="monotone" dataKey={s.key} name={s.name}
+              stroke={s.color} dot={false} strokeWidth={s.width} strokeOpacity={0.8}
               hide={hidden.has(s.key)} isAnimationActive={false} connectNulls />
           ))}
         </LineChart>
       </ResponsiveContainer>
+      </div>
       <div className="chart-legend">
-        {CMP_LINES.map((s) => (
+        {[...pxLines, ...IDX_LINES].map((s) => (
           <button key={s.key} className={hidden.has(s.key) ? 'off' : ''} onClick={() => toggle(s.key)}>
-            <span className="swatch" style={{ background: s.color, height: s.axis === 'px' ? 4 : 2 }} />
-            {s.key === 'px' && isMom ? '주가(추세이탈)' : s.name}
+            <span className="swatch" style={{ background: s.color, height: s.width >= 2 ? 4 : 2 }} />
+            {s.name}
           </button>
         ))}
       </div>
       <p className="note">
-        {isMom
-          ? <>검은선 = <b>주가 추세이탈</b>(125일 평균 대비 %, 오른축). 추세를 걷어내니 <b>심리 지수와 함께 출렁이는 게</b> 보여요.</>
-          : <>검은 굵은선 = <b>실제 주가</b>(오른축), 색선 = 지수 0~100(왼축). <b>추세이탈</b>로 바꾸면 심리와의 동행이 더 잘 보여요.</>}
+        {isBase
+          ? <>무채색·갈색 선 = <b>주가</b>(오른축, 보이는 구간 첫날=100), 색선 = 지수 0~100(왼축).
+              절대 수준이 크게 달라({market === 'US' ? '다우 5.2만 vs S&P 7.4천' : '코스피 6.7천 vs 코스닥 748'})
+              같은 출발선에 놓고 <b>어느 쪽이 더 올랐나</b>로 봅니다.</>
+          : isMom
+            ? <>주가 선 = <b>추세이탈</b>(125일 평균 대비 %, 오른축). 추세를 걷어내니 <b>심리 지수와 함께 출렁이는 게</b> 보여요.</>
+            : <><b>실제 지수값</b>(오른축) 그대로예요 — 절대 수준 차이가 커서 낮은 지수는 바닥에 눌려 보입니다.
+              하나만 남기고 범례로 끄거나, <b>지수화</b>로 보세요.</>}
         {' '}범례로 켜고 끌 수 있어요.
       </p>
     </section>
@@ -968,10 +1139,14 @@ function ComparisonColumn({ market, flag, name }) {
   useEffect(() => {
     let alive = true
     ;(async () => {
-      const page = async (table, cols) => {
+      // tie: dt만으로 정렬하면 한 날짜에 행이 여러 개인 테이블(price_daily는 지수별로 3행)에서
+      //      페이지 경계 순서가 흔들려 중복·누락이 생긴다 → 총순서가 되도록 두 번째 키로 정렬.
+      const page = async (table, cols, tie) => {
         let all = [], from = 0
         for (;;) {
-          const { data, error } = await supabase.from(table).select(cols).eq('market', market).order('dt').range(from, from + 999)
+          let q = supabase.from(table).select(cols).eq('market', market).order('dt')
+          if (tie) q = q.order(tie)
+          const { data, error } = await q.range(from, from + 999)
           if (error) throw error
           all = all.concat(data || [])
           if (!data || data.length < 1000) break
@@ -980,18 +1155,25 @@ function ComparisonColumn({ market, flag, name }) {
         return all
       }
       try {
-        const [px, sent, liq, fuel] = await Promise.all([
-          page('price_daily', 'dt,close'), page('sentiment_daily', 'dt,s_score'),
-          page('liquidity_daily', 'dt,l_score'), page('fuel_index', 'dt,f_score'),
+        const [px, sent, liq, inf, fuel] = await Promise.all([
+          page('price_daily', 'dt,close,code', 'code'), page('sentiment_daily', 'dt,s_score'),
+          page('liquidity_daily', 'dt,l_score'), page('inflation_daily', 'dt,i_score'),
+          page('fuel_index', 'dt,f_score'),
         ])
         if (!alive) return
         if (!px.length) { setState('empty'); return }
+        // 지수별 code를 한 날짜 행에 펼친다 — {dt, us_index, us_nasdaq, us_dow, s, l, i, f}
         const byDt = new Map()
-        px.forEach((p) => byDt.set(p.dt, { dt: p.dt, px: p.close }))
+        px.forEach((p) => {
+          let r = byDt.get(p.dt)
+          if (!r) { r = { dt: p.dt }; byDt.set(p.dt, r) }
+          r[p.code] = p.close
+        })
         sent.forEach((x) => { const r = byDt.get(x.dt); if (r) r.s = x.s_score })
         liq.forEach((x) => { const r = byDt.get(x.dt); if (r) r.l = x.l_score })
+        inf.forEach((x) => { const r = byDt.get(x.dt); if (r) r.i = x.i_score })
         // 실탄은 주간/월간이라 주가 날짜에 없을 수 있음 → 가장 가까운(≤) 거래일에 스냅
-        const dts = px.map((p) => p.dt)
+        const dts = [...byDt.keys()]
         fuel.forEach((x) => {
           let lo = 0, hi = dts.length - 1, best = -1
           while (lo <= hi) { const m = (lo + hi) >> 1; if (dts[m] <= x.dt) { best = m; lo = m + 1 } else hi = m - 1 }
@@ -1023,7 +1205,7 @@ function ComparisonSection() {
       <header>
         <h1>비교</h1>
         <p className="lead">
-          우리가 만든 지수(심리·유동성·실탄)를 <b>실제 주가에 겹쳐</b> 봅니다.
+          우리가 만든 지수(심리·유동성·물가·실탄)를 <b>실제 주가에 겹쳐</b> 봅니다.
           지수 고점·저점이 시장 전환과 맞물리는지 눈으로 확인하는 검증용 뷰예요.
         </p>
       </header>
@@ -1048,6 +1230,264 @@ function ComparisonMethod() {
         <li><b>유의한 신호</b> — 🇺🇸 실탄 '풍부' 뒤 이후20일 +2.8%(독립표본 26개, p&lt;0.01) 정도가 통계적으로 뚜렷.</li>
       </ul>
       <p className="note">지수가 주가와 <b>겹쳐 움직이면(동행)</b> 상태를 잘 잡는 것. 예측은 <b>극단에서만</b> 약하게 기대하세요.</p>
+    </section>
+  )
+}
+
+// ── 종합 섹션 ──
+// 비율 슬라이더는 한 벌만 두고 두 시장에 함께 적용한다(같은 기준으로 비교해야 의미가 있음).
+function CompositeSection() {
+  const [w, setW] = useState(MIX_PRESETS[0].w)
+  const [inv, setInv] = useState(() =>
+    Object.fromEntries(MIX_FACTORS.map((f) => [f.key, f.invert])))
+  const total = MIX_FACTORS.reduce((a, f) => a + (w[f.key] || 0), 0)
+  const preset = MIX_PRESETS.find((p) => MIX_FACTORS.every((f) => p.w[f.key] === w[f.key]))
+  return (
+    <>
+      <header>
+        <h1>종합</h1>
+        <p className="lead">
+          네 요인(심리·유동성·물가·실탄)을 <b>내가 정한 비율</b>로 합쳐 하나의 점수로 봅니다.
+          <b> 슬라이더를 움직이면 그래프와 통계가 바로 다시 계산</b>돼요.
+        </p>
+      </header>
+
+      <section className="card weights">
+        <h2>⚖️ 비율 조절</h2>
+        <div className="seg">
+          {MIX_PRESETS.map((p) => (
+            <button key={p.name} className={preset && preset.name === p.name ? 'on' : ''}
+              onClick={() => setW(p.w)}>{p.name}</button>
+          ))}
+        </div>
+        {MIX_FACTORS.map((f) => (
+          <div key={f.key} className="wrow">
+            <span className="wname"><i style={{ background: f.color }} />{f.name}</span>
+            <input type="range" min="0" max="60" step="5" value={w[f.key]}
+              style={{ accentColor: f.color }}
+              onChange={(e) => setW({ ...w, [f.key]: +e.target.value })} />
+            <span className="wpct">{total ? Math.round((w[f.key] / total) * 100) : 0}%</span>
+            <button className={'wdir' + (inv[f.key] ? ' on' : '')}
+              title="점수가 높을 때 유리한지, 낮을 때 유리한지 뒤집습니다"
+              onClick={() => setInv({ ...inv, [f.key]: !inv[f.key] })}>
+              {inv[f.key] ? '반전' : '정방향'}
+            </button>
+            <span className="whint">{inv[f.key] === f.invert ? f.hint : '방향을 뒤집었어요'}</span>
+          </div>
+        ))}
+        <p className="note">
+          비율은 <b>합이 100%가 되도록 자동 환산</b>되니 아무 값이나 넣어도 됩니다.
+          <b> 반전</b>은 "그 요인이 낮을 때 유리한가"를 뒤집는 스위치예요 — 기본값은 밴드 백테스트로 정했습니다.
+        </p>
+      </section>
+
+      <div className="cols">
+        <CompositeColumn market="US" flag="🇺🇸" name="미국" w={w} inv={inv} />
+        <div className="divider" />
+        <CompositeColumn market="KR" flag="🇰🇷" name="한국" w={w} inv={inv} />
+      </div>
+      <CompositeMethod />
+    </>
+  )
+}
+
+function CompositeColumn({ market, flag, name, w, inv }) {
+  const [rows, setRows] = useState([])
+  const [state, setState] = useState('loading')
+  const [h, setH] = useState(60)
+
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      const page = async (table, cols, tie) => {
+        let all = [], from = 0
+        for (;;) {
+          let q = supabase.from(table).select(cols).eq('market', market).order('dt')
+          if (tie) q = q.order(tie)
+          const { data, error } = await q.range(from, from + 999)
+          if (error) throw error
+          all = all.concat(data || [])
+          if (!data || data.length < 1000) break
+          from += 1000
+        }
+        return all
+      }
+      try {
+        const code = market === 'US' ? 'us_index' : 'kr_index'
+        const [px, ...facs] = await Promise.all([
+          page('price_daily', 'dt,close,code', 'code'),
+          ...MIX_FACTORS.map((f) => page(f.table, `dt,${f.col}`)),
+        ])
+        if (!alive) return
+        const byDt = new Map()
+        px.filter((p) => p.code === code).forEach((p) => byDt.set(p.dt, { dt: p.dt, px: p.close }))
+        MIX_FACTORS.forEach((f, k) => {
+          facs[k].forEach((x) => { const r = byDt.get(x.dt); if (r) r[f.key] = x[f.col] })
+        })
+        // 실탄은 주간/월간이라 빈 날이 많음 → 직전값으로 이어 붙인다(그날까지 알려진 최신값)
+        const out = []
+        const last = {}
+        for (const r of byDt.values()) {
+          for (const f of MIX_FACTORS) {
+            if (r[f.key] == null) r[f.key] = last[f.key]
+            else last[f.key] = r[f.key]
+          }
+          if (MIX_FACTORS.every((f) => r[f.key] != null)) out.push(r)
+        }
+        if (!out.length) { setState('empty'); return }
+        setRows(out); setState('ok')
+      } catch (e) {
+        if (!alive) return
+        const msg = `${e?.message || ''} ${e?.code || ''}`
+        setState(/exist|find the table|PGRST205|42P01/i.test(msg) ? 'empty' : 'error')
+      }
+    })()
+    return () => { alive = false }
+  }, [market])
+
+  // 비율이 바뀔 때마다 다시 계산되는 부분 — 여기가 슬라이더의 반응 지점.
+  const data = useMemo(() => {
+    const tot = MIX_FACTORS.reduce((a, f) => a + (w[f.key] || 0), 0) || 1
+    return rows.map((r) => {
+      let mix = 0
+      for (const f of MIX_FACTORS) {
+        mix += (inv[f.key] ? 100 - r[f.key] : r[f.key]) * (w[f.key] || 0) / tot
+      }
+      return { ...r, mix }
+    })
+  }, [rows, w, inv])
+
+  const stats = useMemo(() => {
+    const buckets = MIX_BANDS.map((b) => ({ band: b, n: 0, sum: 0, win: 0 }))
+    for (let k = 0; k + h < data.length; k++) {
+      const ret = (data[k + h].px / data[k].px - 1) * 100
+      const bi = Math.min(4, Math.floor(data[k].mix / 20))
+      const b = buckets[bi]
+      b.n++; b.sum += ret; if (ret > 0) b.win++
+    }
+    return buckets
+  }, [data, h])
+
+  const latest = data.length ? data[data.length - 1] : null
+  return (
+    <div className="col">
+      <div className="col-head">{flag} <b>{name}</b></div>
+      {state === 'loading' && <div className="col-msg">불러오는 중…</div>}
+      {state === 'error' && <div className="col-msg">데이터를 불러오지 못했어요</div>}
+      {state === 'empty' && <div className="col-msg soon">🚧<br /><b>데이터 준비 중</b></div>}
+      {state === 'ok' && latest && (
+        <>
+          <p className="col-date">{latest.dt} 기준</p>
+          <Gauge value={latest.mix} band={mixBandOf(latest.mix)} lowLabel="불리" highLabel="유리"
+            desc={MIX_BAND_DESC[mixBandOf(latest.mix).name]} />
+          <MixChart data={data} market={market} />
+          <section className="card">
+            <h2>종합점수 밴드별 '이후 {h}일' 수익률</h2>
+            <div className="seg">
+              {MIX_HORIZONS.map((x) => (
+                <button key={x} className={h === x ? 'on' : ''} onClick={() => setH(x)}>{x}일</button>
+              ))}
+            </div>
+            <table className="stats">
+              <thead><tr><th>구간</th><th>일수</th><th>이후{h}일</th><th>승률</th></tr></thead>
+              <tbody>
+                {stats.map((b, k) => {
+                  if (!b.n) return null
+                  const avg = b.sum / b.n
+                  const color = avg > 2 ? '#1e8449' : avg < 0 ? '#c0392b' : 'inherit'
+                  return (
+                    <tr key={b.band.name}>
+                      <td><span className="bdot" style={{ background: b.band.color }} />
+                        {k * 20}~{k * 20 + 20} {b.band.name}</td>
+                      <td>{b.n}</td>
+                      <td style={{ color, fontWeight: avg > 2 || avg < 0 ? 700 : 400 }}>
+                        {avg > 0 ? '+' : ''}{avg.toFixed(1)}%
+                      </td>
+                      <td>{Math.round((b.win / b.n) * 100)}%</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+            <p className="note">
+              지금 비율로 <b>과거 전체를 다시 계산</b>한 결과예요. 위로 갈수록 수익률이 높아지면
+              그 비율이 국면을 잘 가른다는 뜻입니다. (표본이 겹쳐 있어 참고용)
+            </p>
+          </section>
+        </>
+      )}
+    </div>
+  )
+}
+
+function MixChart({ data, market }) {
+  const [range, setRange] = useState(756)
+  const [evtTip, setEvtTip] = useState(null)
+  const shown = range === Infinity ? data : data.slice(-range)
+  const events = eventsFor(market, shown)
+  return (
+    <section className="card">
+      <h2>종합점수 vs 주가</h2>
+      <div className="seg">
+        {RANGES.map((r) => (
+          <button key={r.label} className={range === r.days ? 'on' : ''}
+            onClick={() => setRange(r.days)}>{r.label}</button>
+        ))}
+      </div>
+      <div className="chart-wrap">
+      <EventTip tip={evtTip} />
+      <ResponsiveContainer width="100%" height={258}>
+        <LineChart data={shown} margin={{ top: 18, right: 2, left: -24, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
+          <XAxis dataKey="dt" tick={{ fontSize: 10 }} minTickGap={48} />
+          <YAxis yAxisId="idx" domain={[0, 100]} tick={{ fontSize: 10 }} />
+          <YAxis yAxisId="px" orientation="right" domain={['auto', 'auto']} width={46}
+            tick={{ fontSize: 9 }} tickFormatter={(v) => Math.round(v).toLocaleString()} />
+          <Tooltip formatter={(v, n) => [n === '주가' ? Math.round(v).toLocaleString() : Math.round(v), n]}
+            wrapperStyle={{ outline: 'none' }} />
+          <ReferenceLine yAxisId="idx" y={60} stroke="#1e8449" strokeDasharray="4 4" />
+          <ReferenceLine yAxisId="idx" y={40} stroke="#c0392b" strokeDasharray="4 4" />
+          {events.map((e) => (
+            <ReferenceLine key={e.dt + e.label} yAxisId="idx" x={e.x} stroke="#b0b4ba" strokeDasharray="2 3"
+              label={<EventMarker evt={e} setTip={setEvtTip} />} />
+          ))}
+          <Line yAxisId="px" type="monotone" dataKey="px" name="주가" stroke="#111827"
+            dot={false} strokeWidth={1.6} isAnimationActive={false} />
+          <Line yAxisId="idx" type="monotone" dataKey="mix" name="종합점수" stroke="#d97706"
+            dot={false} strokeWidth={2.4} isAnimationActive={false} />
+        </LineChart>
+      </ResponsiveContainer>
+      </div>
+      <p className="note">
+        굵은 <b style={{ color: '#d97706' }}>주황</b>이 종합점수(왼축), 검은선이 <b>실제 주가</b>(오른축).
+        점선은 60(유리)·40(불리) 경계예요. 주황이 낮을 때 주가가 바닥이었는지 눈으로 확인해보세요.
+      </p>
+    </section>
+  )
+}
+
+function CompositeMethod() {
+  return (
+    <section className="card method">
+      <h2>🧭 종합점수, 어떻게 읽나요?</h2>
+      <p className="cap">
+        네 요인을 <b>같은 방향(높을수록 유리)</b>으로 맞춘 뒤 비율대로 평균낸 값. 0~100.
+      </p>
+      <ul>
+        <li><b>😨 심리</b> — <b>반전</b>. 공포일수록 유리(역발상). 극단공포−극단탐욕 이후20일 🇺🇸+5.3%p 🇰🇷+3.5%p.</li>
+        <li><b>💧 유동성</b> — 정방향. 돈이 풀렸을수록 유리.</li>
+        <li><b>🔥 물가</b> — <b>반전</b>. 저물가일수록 유리. 네 요인 중 이후수익률과 가장 일관되게 붙습니다(🇺🇸-0.22 🇰🇷-0.17).</li>
+        <li><b>💰 실탄</b> — 정방향. 증시로 들어올 돈이 많을수록 유리.</li>
+      </ul>
+      <p className="note">
+        기본 비율 <b>20·25·30·25</b>는 미국·한국 양쪽에서 비겹침 표본으로 검증해 고른 절충안이에요.
+        미국만 보면 '물가 중심', 한국만 보면 '유동성·실탄'이 더 나은데 <b>한쪽에 맞추면 다른 쪽이 나빠져서</b>,
+        어느 쪽도 크게 지지 않는 값을 골랐습니다.
+      </p>
+      <p className="note">
+        ⚠️ 이건 <b>예측기가 아니라 국면 측정기</b>예요. 표본이 거시 국면 10개 남짓이라
+        "매우 유리"가 다음에도 같으리란 보장은 없습니다. 비율을 바꿔가며 <b>어떤 조합이 과거를 잘 갈랐는지</b> 보는 도구로 쓰세요.
+      </p>
     </section>
   )
 }

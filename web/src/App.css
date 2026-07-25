@@ -107,6 +107,9 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   .chart-tip .tip-date, .chart-tip .tip-row.main .tip-name { color: #e2e8f0; }
   .chart-tip .tip-name { color: #94a3b8; }
   .chart-tip .tip-val b { color: #f1f5f9; }
+  .event-tip b { color: #f1f5f9; }
+  .weights .wname { color: #e2e8f0; }
+  .weights .wpct { color: #f1f5f9; }
   .freq-badge { background: #78350f; color: #fde68a; }
 }
 
@@ -124,6 +127,34 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .chart-tip .tip-val b { color: #111827; font-weight: 700; margin-right: 7px; }
 .chart-tip .tip-val em { color: #94a3b8; font-style: normal; font-variant-numeric: tabular-nums; }
 .chart-tip .tip-foot { margin-top: 7px; font-size: 10px; color: #94a3b8; line-height: 1.4; }
+
+/* ── 이벤트 마커 말풍선 (차트 상단 이모지에 커서를 댈 때) ── */
+.chart-wrap { position: relative; }
+.event-tip { position: absolute; z-index: 5; pointer-events: none; white-space: nowrap;
+  background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .16); font-size: 11.5px; line-height: 1.5; }
+.event-tip b { font-weight: 700; color: #111827; }
+.event-tip span { color: #94a3b8; margin-left: 8px; font-variant-numeric: tabular-nums; }
+
+/* ── 종합 탭: 비율 조절 패널 ── */
+.weights .wrow { display: flex; align-items: center; gap: 10px; margin: 9px 2px; }
+.weights .wname { display: flex; align-items: center; gap: 7px; width: 66px; flex: none;
+  font-size: 12.5px; font-weight: 600; color: #334155; }
+.weights .wname i { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+.weights input[type=range] { flex: 1; min-width: 0; height: 4px; cursor: pointer; }
+.weights .wpct { width: 38px; flex: none; text-align: right; font-size: 12.5px; font-weight: 700;
+  color: #111827; font-variant-numeric: tabular-nums; }
+.weights .wdir { flex: none; font: inherit; font-size: 10.5px; font-weight: 600; padding: 3px 9px;
+  border-radius: 999px; border: 1px solid var(--line); background: var(--card);
+  color: #94a3b8; cursor: pointer; }
+.weights .wdir.on { border-color: #d97706; color: #d97706; }
+.weights .whint { font-size: 11px; color: #94a3b8; flex: none; }
+.stats .bdot { display: inline-block; width: 8px; height: 8px; border-radius: 2px;
+  margin-right: 7px; vertical-align: middle; }
+
+@media (max-width: 720px) {
+  .weights .whint { display: none; }
+}
 
 /* 빈도 뱃지 (한국 실탄 '월간' 표시) */
 .freq-badge { display: inline-block; margin-left: 7px; padding: 1px 8px; font-size: 10px; font-weight: 700;

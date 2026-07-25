@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Claude Code 로컬 설정(개발서버 실행 정의) — 저장소에 넣지 않음
+.claude/

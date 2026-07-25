@@ -16,8 +16,13 @@ except Exception:
 load_dotenv()
 sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
 
-NEEDED = ["us_10y", "us_3m", "dxy", "hyg", "iei",       # 미국 유동성
-          "kr_3y", "kr_10y", "kr_corp3y", "usdkrw"]     # 한국 유동성(국내물 + 원/달러)
+NEEDED = ["us_10y", "us_3m", "dxy", "hyg", "iei",                   # 미국 유동성
+          "kr_3y", "kr_10y", "kr_corp3y", "usdkrw",                 # 한국 유동성(국내물 + 원/달러)
+          "kr_cd91", "kr_call"]                                     # 한국 커브의 단기 쪽 후보
+# 커브 단기물 우선순위 — 앞에서부터 '충분히 쌓인' 첫 코드를 쓴다.
+#   미국은 10년-3개월(정책금리 대비)인데 한국은 3년물을 써서 커브가 정책 스탠스를 못 읽었다.
+#   ECOS 항목코드가 틀리면 수집이 비므로, 국고채3년으로 안전하게 되돌아간다.
+KR_SHORT = ["kr_cd91", "kr_call", "kr_3y"]
 
 # 검증용 과거 기준일 (상식과 맞나: 2021 초완화 → 높음, 2022 긴축 → 낮음)
 CHECKS = [("초완화 2021-08", "2021-08-16"),
@@ -40,8 +45,16 @@ def fetch_codes(codes):
     return rows
 
 
-def pct_rank(s, win=252):
-    return s.rolling(win).apply(lambda x: (x.iloc[-1] > x.iloc[:-1]).mean() * 100, raw=False)
+# 백분위 창 = 3년(756일). 심리(1년)와 달리 금리·환율은 정책 사이클이 몇 년짜리라,
+# 1년 창이면 "오래된 완화/긴축"이 곧 중립으로 읽혀버린다. 실제로 창을 늘리니 체크포인트가
+# 1/5 → 3/5로 개선됐다 (2021-08 초완화를 54=중립 → 64=완화로 제대로 읽음).
+# min_periods=252 는 이력 보존용 — 초기 구간은 가능한 만큼의 창으로 계산한다(안 그러면 3년치 손실).
+WIN = 756
+
+
+def pct_rank(s, win=WIN, minp=252):
+    return s.rolling(win, min_periods=minp).apply(
+        lambda x: (x.iloc[-1] > x.iloc[:-1]).mean() * 100, raw=False)
 
 
 def band(v):
@@ -62,13 +75,19 @@ def compute(w, market):
         c_curve = pct_rank(curve)                         # 커브 가파를수록 완화적
         c_fx = 100 - pct_rank(d["dxy"])                   # 강달러 = 긴축 → 뒤집기
         # 신용: HYG/IEI(듀레이션 근접 국채)↑ = 스프레드 좁음 = 완화. LQD는 장기물이라 금리에 오염돼 부적합.
-        c_credit = pct_rank(d["hyg"] / d["iei"])
+        # 수준 그대로 백분위를 매기면 평온기에 계속 1년 신고가라 상위밴드에 59% 체류 = 사실상 상수.
+        # → '60일 평균 대비'로 바꿔 국면 변화만 잡는다 (포화 59%→16%, 동시점 상관 0.32→0.48).
+        cr = d["hyg"] / d["iei"]
+        c_credit = pct_rank(cr / cr.rolling(60).mean())
         raw_10y, raw_b, raw_krw = d["us_10y"], d["dxy"], None   # 카드: 미10년물 / DXY
     else:  # KR — 4성분 전부 국내물(커브·신용까지). 미국·글로벌 영향은 원/달러(c_fx)로 유입.
-        d = w[["kr_3y", "kr_10y", "kr_corp3y", "usdkrw"]].dropna()
+        short = next((c for c in KR_SHORT if c in w.columns and w[c].notna().sum() > 500), "kr_3y")
+        d = w[list(dict.fromkeys(["kr_3y", "kr_10y", "kr_corp3y", "usdkrw", short]))].dropna()
         c_rate = 100 - pct_rank(d["kr_10y"])                    # 국고채10년 높으면 긴축 → 뒤집기
-        curve = d["kr_10y"] - d["kr_3y"]                        # 국고채 10년-3년 (%p)
+        curve = d["kr_10y"] - d[short]                          # 국고채10년 - 단기금리 (%p)
         c_curve = pct_rank(curve)                              # 한국 커브 가파를수록 완화적
+        print(f"  [KR] 커브 단기물: {short}" + ("  ⚠️ ECOS 단기금리 미수집 → 국고채3년 대체"
+                                             if short == "kr_3y" else ""))
         c_fx = 100 - pct_rank(d["usdkrw"])                     # 원 약세(원/달러↑) = 긴축 → 뒤집기
         spread = d["kr_corp3y"] - d["kr_3y"]                   # 회사채-국고채 신용스프레드
         c_credit = 100 - pct_rank(spread)                     # 스프레드 넓을수록 신용경색=긴축 → 뒤집기

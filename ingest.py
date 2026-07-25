@@ -29,13 +29,53 @@ sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"
 #   물가(I) 지표: tip·ief(기대인플레=물가연동채/국채), uso(유가), dbc(원자재), dbb(산업금속) → 미국 계정에.
 #     원자재·유가는 글로벌이라 한국 물가에도 그대로 작용. 한국은 여기에 usdkrw(원 약세=수입물가)를 더해 계산.
 JOBS = {
-    "US": {"vix": "^VIX", "us_index": "^GSPC", "us_bond": "TLT",
+    "US": {"vix": "^VIX", "us_index": "^GSPC", "us_nasdaq": "^IXIC", "us_dow": "^DJI",
+           "us_bond": "TLT",
            "rsp": "RSP", "spy": "SPY",
            "us_10y": "^TNX", "us_3m": "^IRX", "dxy": "DX-Y.NYB",
            "hyg": "HYG", "iei": "IEI",
-           "tip": "TIP", "ief": "IEF", "uso": "USO", "dbc": "DBC", "dbb": "DBB"},
+           "tip": "TIP", "ief": "IEF", "uso": "USO", "dbc": "DBC", "dbb": "DBB",
+           "wti": "CL=F", "copper": "HG=F", "gsci": "^SPGSCI",
+           "corn": "ZC=F", "wheat": "ZW=F", "soy": "ZS=F"},
     "KR": {"kr_index": "^KS11", "kr_bond": "148070.KS", "kr_kosdaq": "^KQ11",
            "usdkrw": "USDKRW=X"},
+}
+
+# indicator_raw.code → indicator_meta.code FK가 있어, 메타에 없는 코드는 적재가 통째로 막힌다.
+# JOBS에 티커만 추가하고 메타를 빠뜨리면 조용히 0행이 되므로, ECOS(upsert_ecos_meta)와 똑같이
+# 수집 직전에 자동 등록한다 — Supabase SQL 수동 등록 불필요. code → (name, category, role).
+# source는 JOBS의 심볼에서 만들어 쓰므로 여기 중복해 적지 않는다.
+YF_META = {
+    "vix": ("VIX 변동성", "심리", "fear"),
+    "us_index": ("S&P500 종가", "가격", "price"),
+    "us_nasdaq": ("나스닥 종합", "가격", "price"),
+    "us_dow": ("다우존스 산업평균", "가격", "price"),
+    "us_bond": ("미장기채 TLT", "가격", "price"),
+    "rsp": ("동일가중 S&P (RSP)", "가격", "price"),
+    "spy": ("S&P ETF (SPY)", "가격", "price"),
+    "us_10y": ("미 10년물 금리", "유동성", "rate"),
+    "us_3m": ("미 3개월 금리", "유동성", "rate"),
+    "dxy": ("달러지수 DXY", "유동성", "fx"),
+    "hyg": ("하이일드 HYG", "유동성", "credit"),
+    "iei": ("미국채 3-7년 IEI", "유동성", "credit"),
+    "tip": ("물가연동채 TIP", "물가", "inflation"),
+    "ief": ("미국채 7-10년 IEF", "물가", "inflation"),
+    "uso": ("유가 USO", "물가", "energy"),
+    "dbc": ("원자재 DBC", "물가", "commodity"),
+    "dbb": ("산업금속 DBB", "물가", "metal"),
+    # ↓ 점수 계산엔 안 쓰고 대시보드에 '실제 수치'로 보여주기만 하는 원자재 원물 시세
+    "wti": ("WTI 유가($/배럴)", "물가", "energy"),
+    "copper": ("구리($/lb)", "물가", "metal"),
+    "gsci": ("원자재지수 GSCI", "물가", "commodity"),
+    # 곡물 3종 = 물가의 '식품' 성분. 에너지와 상관 0.40으로 낮아 새 정보를 준다
+    # (기존 DBC 원자재는 절반이 에너지라 에너지를 두 번 세는 꼴이었음).
+    "corn": ("옥수수", "물가", "food"),
+    "wheat": ("밀", "물가", "food"),
+    "soy": ("대두", "물가", "food"),
+    "kr_index": ("코스피", "가격", "price"),
+    "kr_bond": ("국고채10년 ETF (KOSEF)", "가격", "price"),
+    "kr_kosdaq": ("코스닥", "가격", "greed"),
+    "usdkrw": ("원/달러", "유동성", "fx"),
 }
 
 # ── ECOS(한국은행) 시장금리 일별 — 한국 유동성용 국내 금리 (yfinance엔 없음) ──
@@ -47,6 +87,11 @@ ECOS_ITEMS = {                    # code → (ECOS 817Y002 항목코드, 메타 
     "kr_3y":     ("010200000", "국고채 3년", "rate"),
     "kr_10y":    ("010210000", "국고채 10년", "rate"),
     "kr_corp3y": ("010300000", "회사채 3년(AA-)", "credit"),
+    # 일드커브의 '단기' 쪽. 미국은 10년-3개월(정책금리 대비)인데 한국은 3년물을 써서
+    # 커브가 정책 스탠스를 못 읽었다 → 단기 자금금리로 교체. 둘 다 받아 liquidity.py가 있는 걸 고른다.
+    # (항목코드가 틀리면 run_ecos가 '데이터 없음'으로 건너뛰고, liquidity.py는 국고채3년으로 되돌아감)
+    "kr_cd91":   ("010502000", "CD 91일", "rate"),
+    "kr_call":   ("010101000", "콜금리(1일물)", "rate"),
 }
 
 
@@ -85,7 +130,18 @@ def get_series(market, code, sym):
     return pd.Series(dtype="float64")
 
 
+def upsert_yf_meta(market):
+    """이 시장에서 수집할 코드를 indicator_meta에 먼저 등록(FK 충족). on_conflict=code 라 재실행 안전."""
+    rows = [{"code": code, "name": YF_META[code][0], "market": market,
+             "category": YF_META[code][1], "role": YF_META[code][2],
+             "source": f"yfinance:{sym}"}
+            for code, sym in JOBS[market].items() if code in YF_META]
+    if rows:
+        sb.table("indicator_meta").upsert(rows, on_conflict="code").execute()
+
+
 def run(market):
+    upsert_yf_meta(market)    # FK 충족: 신규 코드 메타 먼저 등록
     total, failed = 0, []
     for i, (code, sym) in enumerate(JOBS[market].items()):
         if i:
@@ -97,7 +153,13 @@ def run(market):
             print(f"  [{market}] {code} ({sym}): 데이터 없음 — 건너뜀")
             continue
         rows = to_rows(s, market, code)
-        upsert(rows)
+        try:
+            upsert(rows)
+        except Exception as e:
+            # 적재 실패(FK 누락 등)도 한 코드만 건너뛴다 — 안 그러면 크론 전체가 멈춤.
+            failed.append(f"{code}(적재실패)")
+            print(f"  [{market}] {code} ({sym}): 적재 실패 — {e}")
+            continue
         total += len(rows)
         print(f"  [{market}] {code} ({sym}): {len(rows)} rows")
     sb.table("ingest_log").insert(

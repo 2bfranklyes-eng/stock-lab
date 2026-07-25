@@ -1,6 +1,16 @@
 # sentiment.py — indicator_raw 읽어 S(t) 심리점수 계산 → sentiment_daily (미국 + 한국)
-# v0 구성(4성분): 변동성(공포) + 모멘텀(탐욕) + 안전자산선호(탐욕) + 시장 폭(탐욕)
+# 구성(4성분): 변동성(공포) + 모멘텀(탐욕) + 위험선호(탐욕) + 시장 폭(탐욕)
 #   미국은 변동성=VIX(내재변동성). 한국은 VKOSPI를 못 받아 코스피 '실현변동성'으로 대체.
+#
+# ⚠️ 이 구성은 여러 대안과 붙여본 결과다. 바꾸려면 '동시점 주가 상관'이 아니라
+#    아래 두 기준으로 재야 한다 — 동시점 상관은 빠르고 시끄러운 성분을 유리하게 만든다.
+#      ① 체크포인트: 알려진 국면(코로나 폭락·약세장 바닥 등)에서 상식과 맞는 값이 나오나
+#      ② 역발상: 극단공포 뒤 반등이 극단탐욕 뒤보다 큰가 (이 지표의 존재 이유)
+#    실제로 시도했다가 되돌린 것들:
+#      · 시장 폭 제거 → 동시점 상관은 올랐지만 역발상이 무너짐(KR은 부호까지 뒤집힘 +3.1→-2.2%p)
+#      · 변동성을 '평소 대비 비율'로 → 역발상 US +10.6→+3.6%p로 악화
+#      · 종합 재정규화(밴드 도달률 2%→20%) → 체크포인트 5/6→3/6, 역발상 붕괴.
+#        극단이 드문 것 자체가 정보였다(80+ 상위 2%가 진짜 신호).
 import os
 import sys
 from dotenv import load_dotenv
@@ -70,9 +80,12 @@ def compute(market):
     df = pd.DataFrame(raw)
     df["dt"] = pd.to_datetime(df["dt"])
     w = df.pivot(index="dt", columns="code", values="value").sort_index()
-    # 필요한 지표가 모두 있는 날만 사용 — 반쪽 행 하나가 rolling 창을 오염시키는 것 방지
-    #   (미국: 휴장일 VIX만 들어오는 행 / 한국: 동일가중 ETF 상장 이전 구간 등)
-    w = w.dropna()
+    # 심리에 쓰는 지표만 골라낸 뒤 dropna — 반쪽 행이 rolling 창을 오염시키는 건 막되,
+    # 심리와 무관한 지표(원자재·나스닥 등)까지 요구하지 않는다.
+    # ⚠️ 예전엔 pivot 전체에 dropna를 걸어, 수집이 끊긴 죽은 코드(lqd) 하나 때문에
+    #    미국 심리가 그 날짜에서 영구히 멈췄다. 지표를 추가할수록 이력이 갉이는 구조였음.
+    need = [cfg["index"], cfg["bond"], cfg["ew"], cfg["cw"]] + ([cfg["vol"]] if cfg["vol"] else [])
+    w = w[list(dict.fromkeys(need))].dropna()   # dict.fromkeys = 순서 유지 중복 제거(KR은 index==cw)
 
     idx = w[cfg["index"]]
     # ── 파생 지표 (4성분) ──
