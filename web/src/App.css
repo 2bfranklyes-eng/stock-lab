@@ -109,7 +109,8 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   .chart-tip .tip-val b { color: #f1f5f9; }
   .event-tip b { color: #f1f5f9; }
   .weights .wname { color: #e2e8f0; }
-  .weights .wpct { color: #f1f5f9; }
+  .weights .wpct, .weights .wnum { color: #f1f5f9; }
+  .weights.dock { box-shadow: 0 -8px 28px rgba(0, 0, 0, .45); }
   .outlook .ocells b { color: #f1f5f9; }
   .outlook .owarn { background: #2a1f07; border-color: #78350f; color: #fcd34d; }
   .outlook .owarn b { color: #fde68a; }
@@ -140,12 +141,23 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .event-tip span { color: #94a3b8; margin-left: 8px; font-variant-numeric: tabular-nums; }
 
 /* ── 종합 탭: 비율 조절 패널 ── */
+/* 화면 하단에 붙여둔다(sticky) — 차트·표를 보면서 스크롤 없이 비율을 바꾸기 위함.
+   자기 자리에 닿으면 자연스럽게 그 자리에 앉는다. */
+.weights.dock { position: sticky; bottom: 8px; z-index: 15;
+  box-shadow: 0 -8px 28px rgba(15, 23, 42, .13); backdrop-filter: blur(6px); }
+.weights .whead { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; }
+.weights .whead h2 { margin: 0 0 8px; }
+.weights .whead .seg { flex: 1; }
+.weights .wpin { border-style: dashed !important; }
 .weights .wrow { display: flex; align-items: center; gap: 10px; margin: 9px 2px; }
 .weights .wname { display: flex; align-items: center; gap: 7px; width: 66px; flex: none;
   font-size: 12.5px; font-weight: 600; color: #334155; }
 .weights .wname i { width: 9px; height: 9px; border-radius: 2px; flex: none; }
 .weights input[type=range] { flex: 1; min-width: 0; height: 4px; cursor: pointer; }
-.weights .wpct { width: 38px; flex: none; text-align: right; font-size: 12.5px; font-weight: 700;
+.weights .wnum { width: 52px; flex: none; font: inherit; font-size: 12px; text-align: center;
+  padding: 3px 4px; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--card); color: #111827; font-variant-numeric: tabular-nums; }
+.weights .wpct { width: 42px; flex: none; text-align: right; font-size: 12.5px; font-weight: 700;
   color: #111827; font-variant-numeric: tabular-nums; }
 .weights .wdir { flex: none; font: inherit; font-size: 10.5px; font-weight: 600; padding: 3px 9px;
   border-radius: 999px; border: 1px solid var(--line); background: var(--card);
@@ -170,6 +182,8 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 
 @media (max-width: 720px) {
   .weights .whint { display: none; }
+  /* 좁은 화면에선 붙박이를 풀어 그냥 흐름대로 둔다 — 조절판이 화면 절반을 먹으면 손해다 */
+  .weights.dock { position: static; box-shadow: none; }
 }
 
 /* 빈도 뱃지 (한국 실탄 '월간' 표시) */

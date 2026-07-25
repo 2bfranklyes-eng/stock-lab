@@ -1257,12 +1257,45 @@ function ComparisonMethod() {
 
 // ── 종합 섹션 ──
 // 비율 슬라이더는 한 벌만 두고 두 시장에 함께 적용한다(같은 기준으로 비교해야 의미가 있음).
+// 비율은 브라우저에 저장해 새로고침해도 유지한다(고정값 슬롯 포함).
+const MIX_LS_KEY = 'stocklab.mix.v1'
+// 저장된 값에 빠진 요인이 있으면(요인이 추가·변경된 뒤 등) 기본값으로 메워 준다.
+// 안 그러면 value={undefined}가 돼 input이 uncontrolled로 바뀐다.
+const fillW = (o) => Object.fromEntries(
+  MIX_FACTORS.map((f) => [f.key, Number.isFinite(o?.[f.key]) ? o[f.key] : 0]))
+const fillInv = (o) => Object.fromEntries(
+  MIX_FACTORS.map((f) => [f.key, typeof o?.[f.key] === 'boolean' ? o[f.key] : f.invert]))
+
+function loadMixPrefs() {
+  try {
+    const s = JSON.parse(localStorage.getItem(MIX_LS_KEY))
+    if (!s) return {}
+    return {
+      w: s.w ? fillW(s.w) : null,
+      inv: s.inv ? fillInv(s.inv) : null,
+      pinned: s.pinned ? { w: fillW(s.pinned.w), inv: fillInv(s.pinned.inv) } : null,
+    }
+  } catch { return {} }
+}
+
 function CompositeSection() {
-  const [w, setW] = useState(MIX_PRESETS[0].w)
-  const [inv, setInv] = useState(() =>
-    Object.fromEntries(MIX_FACTORS.map((f) => [f.key, f.invert])))
+  const saved = useMemo(loadMixPrefs, [])
+  const [w, setW] = useState(() => saved.w || MIX_PRESETS[0].w)
+  const [inv, setInv] = useState(() => saved.inv
+    || Object.fromEntries(MIX_FACTORS.map((f) => [f.key, f.invert])))
+  const [pinned, setPinned] = useState(() => saved.pinned || null)
+
+  useEffect(() => {   // 사파리 프라이빗 모드 등에서 막힐 수 있어 조용히 무시
+    try { localStorage.setItem(MIX_LS_KEY, JSON.stringify({ w, inv, pinned })) } catch { /* 저장 불가 */ }
+  }, [w, inv, pinned])
+
   const total = MIX_FACTORS.reduce((a, f) => a + (w[f.key] || 0), 0)
-  const preset = MIX_PRESETS.find((p) => MIX_FACTORS.every((f) => p.w[f.key] === w[f.key]))
+  const sameW = (a, b) => MIX_FACTORS.every((f) => (a[f.key] || 0) === (b[f.key] || 0))
+  const preset = MIX_PRESETS.find((p) => sameW(p.w, w))
+  const onPinned = pinned && sameW(pinned.w, w)
+    && MIX_FACTORS.every((f) => !!pinned.inv[f.key] === !!inv[f.key])
+  const setNum = (k, v) => setW({ ...w, [k]: Math.max(0, Math.min(100, Math.round(v) || 0)) })
+
   return (
     <>
       <header>
@@ -1270,24 +1303,43 @@ function CompositeSection() {
         <p className="lead">
           <b>주가와 무관한 배경 요인</b>(유동성·물가·실탄)을 내가 정한 비율로 합쳐 하나의 점수로.
           이 요인들은 주가보다 <b>관성이 커서</b>, 앞으로 두 달쯤을 가늠하는 데 쓸 수 있어요.
-          <b> 슬라이더를 움직이면 전망·그래프·통계가 바로 다시 계산</b>됩니다.
+          <b> 아래 조절판은 화면에 붙어 있어</b> 그래프를 보면서 바로 바꿀 수 있습니다.
         </p>
       </header>
 
-      <section className="card weights">
-        <h2>⚖️ 비율 조절</h2>
-        <div className="seg">
-          {MIX_PRESETS.map((p) => (
-            <button key={p.name} className={preset && preset.name === p.name ? 'on' : ''}
-              onClick={() => setW(p.w)}>{p.name}</button>
-          ))}
+      <div className="cols">
+        <CompositeColumn market="US" flag="🇺🇸" name="미국" w={w} inv={inv} />
+        <div className="divider" />
+        <CompositeColumn market="KR" flag="🇰🇷" name="한국" w={w} inv={inv} />
+      </div>
+
+      {/* 화면 아래에 붙여둔다 — 차트를 보든 표를 보든 스크롤 없이 손이 닿게 */}
+      <section className="card weights dock">
+        <div className="whead">
+          <h2>⚖️ 비율 조절</h2>
+          <div className="seg">
+            {MIX_PRESETS.map((p) => (
+              <button key={p.name} className={preset && preset.name === p.name && !onPinned ? 'on' : ''}
+                onClick={() => setW(p.w)}>{p.name}</button>
+            ))}
+            {pinned && (
+              <button className={onPinned ? 'on' : ''}
+                onClick={() => { setW(pinned.w); setInv(pinned.inv) }}>📌 내 비율</button>
+            )}
+            <button className="wpin" onClick={() => setPinned({ w: { ...w }, inv: { ...inv } })}>
+              {pinned ? '내 비율 갱신' : '📌 내 비율로 고정'}
+            </button>
+            {pinned && <button className="wpin" onClick={() => setPinned(null)}>고정 해제</button>}
+          </div>
         </div>
         {MIX_FACTORS.map((f) => (
           <div key={f.key} className="wrow">
             <span className="wname"><i style={{ background: f.color }} />{f.name}</span>
-            <input type="range" min="0" max="60" step="5" value={w[f.key]}
+            <input type="range" min="0" max="100" step="1" value={w[f.key]}
               style={{ accentColor: f.color }}
-              onChange={(e) => setW({ ...w, [f.key]: +e.target.value })} />
+              onChange={(e) => setNum(f.key, +e.target.value)} />
+            <input type="number" className="wnum" min="0" max="100" value={w[f.key]}
+              onChange={(e) => setNum(f.key, +e.target.value)} />
             <span className="wpct">{total ? Math.round((w[f.key] / total) * 100) : 0}%</span>
             <button className={'wdir' + (inv[f.key] ? ' on' : '')}
               title="점수가 높을 때 유리한지, 낮을 때 유리한지 뒤집습니다"
@@ -1298,16 +1350,10 @@ function CompositeSection() {
           </div>
         ))}
         <p className="note">
-          비율은 <b>합이 100%가 되도록 자동 환산</b>되니 아무 값이나 넣어도 됩니다.
-          <b> 반전</b>은 "그 요인이 낮을 때 유리한가"를 뒤집는 스위치예요 — 기본값은 밴드 백테스트로 정했습니다.
+          가운데 칸에 <b>숫자를 직접 넣어도</b> 됩니다. 비율은 합이 100%가 되도록 자동 환산되니
+          아무 값이나 써도 되고, <b>📌 내 비율로 고정</b>을 누르면 이 브라우저에 저장돼 다음에도 그대로 열립니다.
         </p>
       </section>
-
-      <div className="cols">
-        <CompositeColumn market="US" flag="🇺🇸" name="미국" w={w} inv={inv} />
-        <div className="divider" />
-        <CompositeColumn market="KR" flag="🇰🇷" name="한국" w={w} inv={inv} />
-      </div>
       <CompositeMethod />
     </>
   )
