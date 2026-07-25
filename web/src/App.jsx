@@ -1019,7 +1019,12 @@ const PMODES = [
   { key: 'mom', label: '추세이탈' },
 ]
 
-function ComparisonChart({ rows, market }) {
+// 주가(오른축, 시장별 지수 여러 개) + 0~100 지수선(왼축)을 겹쳐 그리는 공용 차트.
+// 비교 탭과 종합 탭이 같은 주가 처리(지수화·추세이탈·범례·이벤트)를 쓰므로 하나로 묶었다.
+//   idxLines : 왼축(0~100)에 그릴 선들. 비교=4요인, 종합=종합점수 하나.
+//   idxDesc  : 설명문에서 그 선들을 뭐라고 부를지.
+//   refLines : 왼축 기준선(종합 탭의 60/40 경계).
+function PriceOverlayChart({ rows, market, title, idxLines, idxDesc, refLines = [], height = 288, extraNote = null }) {
   const [range, setRange] = useState(756)
   const [hidden, setHidden] = useState(() => new Set())
   const [pmode, setPmode] = useState('base')  // base=지수화 / raw=실제주가 / mom=추세이탈
@@ -1069,7 +1074,7 @@ function ComparisonChart({ rows, market }) {
     : isBase ? v.toFixed(1) : Math.round(v).toLocaleString())
   return (
     <section className="card">
-      <h2>주가 vs 지수 겹쳐보기</h2>
+      <h2>{title}</h2>
       <div className="seg">
         {RANGES.map((r) => (
           <button key={r.label} className={range === r.days ? 'on' : ''} onClick={() => setRange(r.days)}>{r.label}</button>
@@ -1082,7 +1087,7 @@ function ComparisonChart({ rows, market }) {
       </div>
       <div className="chart-wrap">
       <EventTip tip={evtTip} />
-      <ResponsiveContainer width="100%" height={288}>
+      <ResponsiveContainer width="100%" height={height}>
         <LineChart data={plotted} margin={{ top: 18, right: 2, left: -24, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
           <XAxis dataKey="dt" tick={{ fontSize: 10 }} minTickGap={48} />
@@ -1090,9 +1095,13 @@ function ComparisonChart({ rows, market }) {
           <YAxis yAxisId="px" orientation="right" domain={['auto', 'auto']} width={46} tick={{ fontSize: 9 }}
             tickFormatter={(v) => (isMom ? `${Math.round(v)}%` : Math.round(v).toLocaleString())} />
           <Tooltip formatter={(v, name) => [
-            pxLines.some((l) => l.name === name) ? pxFmt(v) : Math.round(v), name]} />
+            pxLines.some((l) => l.name === name) ? pxFmt(v) : Math.round(v), name]}
+            wrapperStyle={{ outline: 'none' }} />
           {isMom && <ReferenceLine yAxisId="px" y={0} stroke="#94a3b8" strokeDasharray="3 3" />}
           {isBase && <ReferenceLine yAxisId="px" y={100} stroke="#94a3b8" strokeDasharray="3 3" />}
+          {refLines.map((r) => (
+            <ReferenceLine key={r.y} yAxisId="idx" y={r.y} stroke={r.color} strokeDasharray="4 4" />
+          ))}
           {events.map((e) => (
             <ReferenceLine key={e.dt + e.label} yAxisId="idx" x={e.x} stroke="#b0b4ba" strokeDasharray="2 3"
               label={<EventMarker evt={e} setTip={setEvtTip} />} />
@@ -1102,16 +1111,16 @@ function ComparisonChart({ rows, market }) {
               stroke={s.color} dot={false} strokeWidth={s.width}
               hide={hidden.has(s.key)} isAnimationActive={false} connectNulls />
           ))}
-          {IDX_LINES.map((s) => (
+          {idxLines.map((s) => (
             <Line key={s.key} yAxisId="idx" type="monotone" dataKey={s.key} name={s.name}
-              stroke={s.color} dot={false} strokeWidth={s.width} strokeOpacity={0.8}
+              stroke={s.color} dot={false} strokeWidth={s.width} strokeOpacity={0.85}
               hide={hidden.has(s.key)} isAnimationActive={false} connectNulls />
           ))}
         </LineChart>
       </ResponsiveContainer>
       </div>
       <div className="chart-legend">
-        {[...pxLines, ...IDX_LINES].map((s) => (
+        {[...pxLines, ...idxLines].map((s) => (
           <button key={s.key} className={hidden.has(s.key) ? 'off' : ''} onClick={() => toggle(s.key)}>
             <span className="swatch" style={{ background: s.color, height: s.width >= 2 ? 4 : 2 }} />
             {s.name}
@@ -1120,16 +1129,25 @@ function ComparisonChart({ rows, market }) {
       </div>
       <p className="note">
         {isBase
-          ? <>무채색·갈색 선 = <b>주가</b>(오른축, 보이는 구간 첫날=100), 색선 = 지수 0~100(왼축).
+          ? <>무채색·갈색 선 = <b>주가</b>(오른축, 보이는 구간 첫날=100), {idxDesc}.
               절대 수준이 크게 달라({market === 'US' ? '다우 5.2만 vs S&P 7.4천' : '코스피 6.7천 vs 코스닥 748'})
               같은 출발선에 놓고 <b>어느 쪽이 더 올랐나</b>로 봅니다.</>
           : isMom
-            ? <>주가 선 = <b>추세이탈</b>(125일 평균 대비 %, 오른축). 추세를 걷어내니 <b>심리 지수와 함께 출렁이는 게</b> 보여요.</>
+            ? <>주가 선 = <b>추세이탈</b>(125일 평균 대비 %, 오른축), {idxDesc}.
+                추세를 걷어내면 <b>지수와 함께 출렁이는 게</b> 보여요.</>
             : <><b>실제 지수값</b>(오른축) 그대로예요 — 절대 수준 차이가 커서 낮은 지수는 바닥에 눌려 보입니다.
-              하나만 남기고 범례로 끄거나, <b>지수화</b>로 보세요.</>}
+                하나만 남기고 범례로 끄거나, <b>지수화</b>로 보세요. ({idxDesc})</>}
         {' '}범례로 켜고 끌 수 있어요.
       </p>
+      {extraNote && <p className="note">{extraNote}</p>}
     </section>
+  )
+}
+
+function ComparisonChart({ rows, market }) {
+  return (
+    <PriceOverlayChart rows={rows} market={market} title="주가 vs 지수 겹쳐보기"
+      idxLines={IDX_LINES} idxDesc="색선 = 지수 0~100(왼축)" />
   )
 }
 
@@ -1313,18 +1331,23 @@ function CompositeColumn({ market, flag, name, w, inv }) {
         return all
       }
       try {
-        const code = market === 'US' ? 'us_index' : 'kr_index'
         const [px, ...facs] = await Promise.all([
           page('price_daily', 'dt,close,code', 'code'),
           ...MIX_FACTORS.map((f) => page(f.table, `dt,${f.col}`)),
         ])
         if (!alive) return
+        // 주가는 지수별 code를 그대로 펼친다 — 비교 탭과 같은 차트를 쓰기 때문(지수화·추세이탈)
         const byDt = new Map()
-        px.filter((p) => p.code === code).forEach((p) => byDt.set(p.dt, { dt: p.dt, px: p.close }))
+        px.forEach((p) => {
+          let r = byDt.get(p.dt)
+          if (!r) { r = { dt: p.dt }; byDt.set(p.dt, r) }
+          r[p.code] = p.close
+        })
         MIX_FACTORS.forEach((f, k) => {
           facs[k].forEach((x) => { const r = byDt.get(x.dt); if (r) r[f.key] = x[f.col] })
         })
         // 실탄은 주간/월간이라 빈 날이 많음 → 직전값으로 이어 붙인다(그날까지 알려진 최신값)
+        const main = PRICE_LINES[market][0].key    // 대표 지수 — 밴드 통계는 이걸로 낸다
         const out = []
         const last = {}
         for (const r of byDt.values()) {
@@ -1332,7 +1355,7 @@ function CompositeColumn({ market, flag, name, w, inv }) {
             if (r[f.key] == null) r[f.key] = last[f.key]
             else last[f.key] = r[f.key]
           }
-          if (MIX_FACTORS.every((f) => r[f.key] != null)) out.push(r)
+          if (r[main] != null && MIX_FACTORS.every((f) => r[f.key] != null)) out.push(r)
         }
         if (!out.length) { setState('empty'); return }
         setRows(out); setState('ok')
@@ -1358,15 +1381,17 @@ function CompositeColumn({ market, flag, name, w, inv }) {
   }, [rows, w, inv])
 
   const stats = useMemo(() => {
+    const main = PRICE_LINES[market][0].key       // 대표 지수(미국 S&P500 / 한국 코스피)
     const buckets = MIX_BANDS.map((b) => ({ band: b, n: 0, sum: 0, win: 0 }))
     for (let k = 0; k + h < data.length; k++) {
-      const ret = (data[k + h].px / data[k].px - 1) * 100
-      const bi = Math.min(4, Math.floor(data[k].mix / 20))
-      const b = buckets[bi]
+      const a = data[k][main], z = data[k + h][main]
+      if (a == null || z == null) continue
+      const ret = (z / a - 1) * 100
+      const b = buckets[Math.min(4, Math.floor(data[k].mix / 20))]
       b.n++; b.sum += ret; if (ret > 0) b.win++
     }
     return buckets
-  }, [data, h])
+  }, [data, h, market])
 
   const latest = data.length ? data[data.length - 1] : null
   return (
@@ -1420,49 +1445,15 @@ function CompositeColumn({ market, flag, name, w, inv }) {
   )
 }
 
+const MIX_IDX_LINE = [{ key: 'mix', name: '종합점수', color: '#d97706', width: 2.4 }]
+const MIX_REF = [{ y: 60, color: '#1e8449' }, { y: 40, color: '#c0392b' }]
+
 function MixChart({ data, market }) {
-  const [range, setRange] = useState(756)
-  const [evtTip, setEvtTip] = useState(null)
-  const shown = range === Infinity ? data : data.slice(-range)
-  const events = eventsFor(market, shown)
   return (
-    <section className="card">
-      <h2>종합점수 vs 주가</h2>
-      <div className="seg">
-        {RANGES.map((r) => (
-          <button key={r.label} className={range === r.days ? 'on' : ''}
-            onClick={() => setRange(r.days)}>{r.label}</button>
-        ))}
-      </div>
-      <div className="chart-wrap">
-      <EventTip tip={evtTip} />
-      <ResponsiveContainer width="100%" height={258}>
-        <LineChart data={shown} margin={{ top: 18, right: 2, left: -24, bottom: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
-          <XAxis dataKey="dt" tick={{ fontSize: 10 }} minTickGap={48} />
-          <YAxis yAxisId="idx" domain={[0, 100]} tick={{ fontSize: 10 }} />
-          <YAxis yAxisId="px" orientation="right" domain={['auto', 'auto']} width={46}
-            tick={{ fontSize: 9 }} tickFormatter={(v) => Math.round(v).toLocaleString()} />
-          <Tooltip formatter={(v, n) => [n === '주가' ? Math.round(v).toLocaleString() : Math.round(v), n]}
-            wrapperStyle={{ outline: 'none' }} />
-          <ReferenceLine yAxisId="idx" y={60} stroke="#1e8449" strokeDasharray="4 4" />
-          <ReferenceLine yAxisId="idx" y={40} stroke="#c0392b" strokeDasharray="4 4" />
-          {events.map((e) => (
-            <ReferenceLine key={e.dt + e.label} yAxisId="idx" x={e.x} stroke="#b0b4ba" strokeDasharray="2 3"
-              label={<EventMarker evt={e} setTip={setEvtTip} />} />
-          ))}
-          <Line yAxisId="px" type="monotone" dataKey="px" name="주가" stroke="#111827"
-            dot={false} strokeWidth={1.6} isAnimationActive={false} />
-          <Line yAxisId="idx" type="monotone" dataKey="mix" name="종합점수" stroke="#d97706"
-            dot={false} strokeWidth={2.4} isAnimationActive={false} />
-        </LineChart>
-      </ResponsiveContainer>
-      </div>
-      <p className="note">
-        굵은 <b style={{ color: '#d97706' }}>주황</b>이 종합점수(왼축), 검은선이 <b>실제 주가</b>(오른축).
-        점선은 60(유리)·40(불리) 경계예요. 주황이 낮을 때 주가가 바닥이었는지 눈으로 확인해보세요.
-      </p>
-    </section>
+    <PriceOverlayChart rows={data} market={market} title="종합점수 vs 주가"
+      idxLines={MIX_IDX_LINE} idxDesc={<>굵은 <b style={{ color: '#d97706' }}>주황</b> = 종합점수 0~100(왼축)</>}
+      refLines={MIX_REF}
+      extraNote={<>가로 점선은 <b>60(유리)</b>·<b>40(불리)</b> 경계예요. 주황이 낮을 때 주가가 바닥이었는지 눈으로 확인해보세요.</>} />
   )
 }
 
