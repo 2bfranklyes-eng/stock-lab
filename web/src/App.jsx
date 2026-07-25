@@ -213,6 +213,7 @@ const TABS = [
   { key: 'liq', label: '유동성', emoji: '💧' },
   { key: 'inf', label: '물가', emoji: '🔥' },
   { key: 'fuel', label: '실탄', emoji: '💰' },
+  { key: 'cmp', label: '비교', emoji: '📊' },
 ]
 
 export default function App() {
@@ -231,6 +232,7 @@ export default function App() {
       {tab === 'liq' && <LiquiditySection />}
       {tab === 'inf' && <InflationSection />}
       {tab === 'fuel' && <FuelSection />}
+      {tab === 'cmp' && <ComparisonSection />}
     </div>
   )
 }
@@ -875,6 +877,149 @@ function FuelMethod() {
         각 재료를 <b>과거 대비 몇 %ile</b>인지로 0~100 환산 → 평균 → 평활.
         <b> ⚠️ 한국은 일간 예탁금·외국인 데이터 접근이 막혀 월간 ECOS(통화량·투자자 순매수)로 대체</b>해요 — 미국(주간)보다 느립니다.
       </p>
+    </section>
+  )
+}
+
+// ── 비교 섹션: 실제 주가에 대표 지수(심리·유동성·실탄)를 겹쳐 봄 (듀얼 Y축) ──
+const CMP_LINES = [
+  { key: 'px', name: '주가', color: '#111827', width: 2, axis: 'px' },
+  { key: 's', name: '심리', color: '#2a78d6', width: 1.3, axis: 'idx' },
+  { key: 'l', name: '유동성', color: '#008300', width: 1.3, axis: 'idx' },
+  { key: 'f', name: '실탄', color: '#d55181', width: 1.3, axis: 'idx' },
+]
+
+function ComparisonChart({ rows, market }) {
+  const [range, setRange] = useState(756)
+  const [hidden, setHidden] = useState(() => new Set())
+  const toggle = (k) => setHidden((h) => { const n = new Set(h); n.has(k) ? n.delete(k) : n.add(k); return n })
+  const shown = range === Infinity ? rows : rows.slice(-range)
+  const events = eventsFor(market, shown)
+  return (
+    <section className="card">
+      <h2>주가 vs 지수 겹쳐보기</h2>
+      <div className="seg">
+        {RANGES.map((r) => (
+          <button key={r.label} className={range === r.days ? 'on' : ''} onClick={() => setRange(r.days)}>{r.label}</button>
+        ))}
+      </div>
+      <ResponsiveContainer width="100%" height={288}>
+        <LineChart data={shown} margin={{ top: 18, right: 2, left: -24, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
+          <XAxis dataKey="dt" tick={{ fontSize: 10 }} minTickGap={48} />
+          <YAxis yAxisId="idx" domain={[0, 100]} tick={{ fontSize: 10 }} />
+          <YAxis yAxisId="px" orientation="right" domain={['auto', 'auto']} width={46} tick={{ fontSize: 9 }}
+            tickFormatter={(v) => Math.round(v).toLocaleString()} />
+          <Tooltip formatter={(v, name) => [name === '주가' ? Math.round(v).toLocaleString() : Math.round(v), name]} />
+          {events.map((e) => (
+            <ReferenceLine key={e.dt + e.label} yAxisId="idx" x={e.x} stroke="#b0b4ba" strokeDasharray="2 3"
+              label={{ value: e.emoji, position: 'top', fontSize: 11 }} />
+          ))}
+          {CMP_LINES.map((s) => (
+            <Line key={s.key} yAxisId={s.axis} type="monotone" dataKey={s.key} name={s.name} stroke={s.color}
+              dot={false} strokeWidth={s.width} strokeOpacity={s.axis === 'px' ? 1 : 0.8}
+              hide={hidden.has(s.key)} isAnimationActive={false} connectNulls />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+      <div className="chart-legend">
+        {CMP_LINES.map((s) => (
+          <button key={s.key} className={hidden.has(s.key) ? 'off' : ''} onClick={() => toggle(s.key)}>
+            <span className="swatch" style={{ background: s.color, height: s.axis === 'px' ? 4 : 2 }} />{s.name}
+          </button>
+        ))}
+      </div>
+      <p className="note">검은 굵은선 = <b>실제 주가</b>(오른쪽 축), 색선 = 지수 0~100(왼쪽 축). <b>지수 고점·저점이 주가 전환과 맞물리는지</b> 보세요. 범례로 켜고 끌 수 있어요.</p>
+    </section>
+  )
+}
+
+function ComparisonColumn({ market, flag, name }) {
+  const [rows, setRows] = useState([])
+  const [state, setState] = useState('loading')
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      const page = async (table, cols) => {
+        let all = [], from = 0
+        for (;;) {
+          const { data, error } = await supabase.from(table).select(cols).eq('market', market).order('dt').range(from, from + 999)
+          if (error) throw error
+          all = all.concat(data || [])
+          if (!data || data.length < 1000) break
+          from += 1000
+        }
+        return all
+      }
+      try {
+        const [px, sent, liq, fuel] = await Promise.all([
+          page('price_daily', 'dt,close'), page('sentiment_daily', 'dt,s_score'),
+          page('liquidity_daily', 'dt,l_score'), page('fuel_index', 'dt,f_score'),
+        ])
+        if (!alive) return
+        if (!px.length) { setState('empty'); return }
+        const byDt = new Map()
+        px.forEach((p) => byDt.set(p.dt, { dt: p.dt, px: p.close }))
+        sent.forEach((x) => { const r = byDt.get(x.dt); if (r) r.s = x.s_score })
+        liq.forEach((x) => { const r = byDt.get(x.dt); if (r) r.l = x.l_score })
+        // 실탄은 주간/월간이라 주가 날짜에 없을 수 있음 → 가장 가까운(≤) 거래일에 스냅
+        const dts = px.map((p) => p.dt)
+        fuel.forEach((x) => {
+          let lo = 0, hi = dts.length - 1, best = -1
+          while (lo <= hi) { const m = (lo + hi) >> 1; if (dts[m] <= x.dt) { best = m; lo = m + 1 } else hi = m - 1 }
+          if (best >= 0) { const r = byDt.get(dts[best]); if (r) r.f = x.f_score }
+        })
+        setRows([...byDt.values()]); setState('ok')
+      } catch (e) {
+        if (!alive) return
+        const msg = `${e?.message || ''} ${e?.code || ''}`
+        setState(/exist|find the table|PGRST205|42P01/i.test(msg) ? 'empty' : 'error')
+      }
+    })()
+    return () => { alive = false }
+  }, [market])
+  return (
+    <div className="col">
+      <div className="col-head">{flag} <b>{name}</b></div>
+      {state === 'loading' && <div className="col-msg">불러오는 중…</div>}
+      {state === 'error' && <div className="col-msg">데이터를 불러오지 못했어요</div>}
+      {state === 'empty' && <div className="col-msg soon">🚧<br /><b>데이터 준비 중</b><br /><span>price_daily 테이블 필요</span></div>}
+      {state === 'ok' && <ComparisonChart rows={rows} market={market} />}
+    </div>
+  )
+}
+
+function ComparisonSection() {
+  return (
+    <>
+      <header>
+        <h1>비교</h1>
+        <p className="lead">
+          우리가 만든 지수(심리·유동성·실탄)를 <b>실제 주가에 겹쳐</b> 봅니다.
+          지수 고점·저점이 시장 전환과 맞물리는지 눈으로 확인하는 검증용 뷰예요.
+        </p>
+      </header>
+      <div className="cols">
+        <ComparisonColumn market="US" flag="🇺🇸" name="미국" />
+        <div className="divider" />
+        <ComparisonColumn market="KR" flag="🇰🇷" name="한국" />
+      </div>
+      <ComparisonMethod />
+    </>
+  )
+}
+
+function ComparisonMethod() {
+  return (
+    <section className="card method">
+      <h2>📊 어떻게 읽나요?</h2>
+      <p className="cap">이 지수들은 <b>예측기가 아니라 상태 측정기</b>예요. "지금 상태"를 잘 그리는지가 핵심.</p>
+      <ul>
+        <li><b>동행(지금 상태)</b> — 심리 지수는 최근 주가 흐름과 상관 <b>≈0.5</b>. 시장 분위기를 정확히 반영합니다.</li>
+        <li><b>예측(앞으로)</b> — 미래 수익률과의 상관은 0.1 안팎. 금융에선 이게 정상(0.5 예측은 차익거래로 사라짐).</li>
+        <li><b>유의한 신호</b> — 🇺🇸 실탄 '풍부' 뒤 이후20일 +2.8%(독립표본 26개, p&lt;0.01) 정도가 통계적으로 뚜렷.</li>
+      </ul>
+      <p className="note">지수가 주가와 <b>겹쳐 움직이면(동행)</b> 상태를 잘 잡는 것. 예측은 <b>극단에서만</b> 약하게 기대하세요.</p>
     </section>
   )
 }
