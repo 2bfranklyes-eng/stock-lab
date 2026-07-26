@@ -1938,6 +1938,34 @@ function useStockMeta() {
   return { meta, state }
 }
 
+// '언제 기준 숫자인가' — 수집 시각이 아니라 재무 기준 분기가 신선도의 척도다.
+// 주가는 주 1회 갱신되지만 재무는 분기마다만 바뀌고 공시까지 45일이 더 걸린다.
+function FiscalNote({ meta, codes = null }) {
+  const rows = codes ? meta.filter((s) => codes.includes(s.code)) : meta
+  const cnt = {}
+  let none = 0
+  for (const s of rows) {
+    if (!s.fiscal_q) none++
+    else cnt[s.fiscal_q] = (cnt[s.fiscal_q] || 0) + 1
+  }
+  const sorted = Object.entries(cnt).sort((a, b) => b[1] - a[1])
+  if (!sorted.length) {
+    return <p className="note fiscal">📅 재무 기준일 정보가 아직 없어요 — screener.py 재실행이 필요합니다.</p>
+  }
+  const [top, n] = sorted[0]
+  const older = sorted.slice(1).reduce((a, [, c]) => a + c, 0)
+  return (
+    <p className="note fiscal">
+      📅 <b>재무 기준: {top} 분기</b> ({rows.length}종목 중 {n}종목
+      {older > 0 && <>, 더 오래된 분기 {older}종목</>}
+      {none > 0 && <>, 기준일 미상 {none}종목</>})
+      <br />
+      재무 숫자는 <b>분기에 한 번</b>만 바뀌고 <b>분기말 +45일 공시 → 반영</b>이라 늘 2~4개월 뒤처집니다.
+      주가·시가총액은 주 1회(토요일) 갱신돼요.
+    </p>
+  )
+}
+
 function StockGate({ state, children }) {
   if (state === 'loading') return <div className="col-msg">불러오는 중…</div>
   if (state === 'error') return <div className="col-msg">데이터를 불러오지 못했어요</div>
@@ -1982,6 +2010,12 @@ function ScreenerSection() {
     })
   }, [meta, preset, market, sort, q])
 
+  // 다수 종목의 재무 기준 분기 — 이것과 다른 종목만 행에 따로 표시해 눈에 띄게 한다
+  const topQ = useMemo(() => {
+    const c = {}
+    for (const s of meta || []) if (s.fiscal_q) c[s.fiscal_q] = (c[s.fiscal_q] || 0) + 1
+    return Object.entries(c).sort((a, b) => b[1] - a[1])[0]?.[0] || null
+  }, [meta])
   const click = (key) => setSort((s) => ({ key, asc: s.key === key ? !s.asc : false }))
   return (
     <>
@@ -2007,6 +2041,7 @@ function ScreenerSection() {
             <input className="scr-q" placeholder="종목명·코드 검색"
               value={q} onChange={(e) => setQ(e.target.value)} />
           </div>
+          <FiscalNote meta={meta} />
           <p className="note">{rows.length}종목 · 열 제목을 누르면 정렬돼요 (결측값은 항상 아래로)</p>
           <div className="scr-wrap">
             <table className="stats scr">
@@ -2025,7 +2060,11 @@ function ScreenerSection() {
                   <tr key={s.code}>
                     <td className="scr-name">
                       <b>{s.name}</b>
-                      <span>{s.code} · {s.market} · {won(s.marcap)}</span>
+                      <span>{s.code} · {s.market} · {won(s.marcap)}
+                        {topQ && s.fiscal_q !== topQ && (
+                          <em className="stale">{s.fiscal_q ? `재무 ${s.fiscal_q}` : '재무 기준일 없음'}</em>
+                        )}
+                      </span>
                     </td>
                     {FIN_COLS.map((c) => (
                       <td key={c.key}>{s[c.key] == null ? '—' : c.fmt(s[c.key])}</td>
@@ -2085,6 +2124,8 @@ function PortfolioSection() {
   const byCode = useMemo(() => Object.fromEntries((meta || []).map((s) => [s.code, s])), [meta])
   const total = items.reduce((a, i) => a + (i.w || 0), 0)
   const found = items.map((i) => ({ ...i, s: byCode[i.code] })).filter((i) => i.s)
+  // 수집 대상(시총 상위 N)에서 빠진 종목은 조용히 없애지 말고 드러낸다 — 담아둔 게 사라지면 혼란스럽다
+  const missing = items.filter((i) => !byCode[i.code])
   const k = q.trim().toLowerCase()      // 'sfa'로 쳐도 'SFA넥셀'이 걸리게
   const hits = k && meta
     ? meta.filter((s) => (s.name?.toLowerCase().includes(k) || s.code.includes(k))
@@ -2130,6 +2171,18 @@ function PortfolioSection() {
               <button className="wdir" onClick={() => setItems(items.filter((x) => x.code !== it.code))}>삭제</button>
             </div>
           ))}
+          {missing.length > 0 && (
+            <div className="owarn">
+              <b>수집 대상에서 빠진 종목 {missing.length}개</b> — {missing.map((m) => m.code).join(', ')}
+              <br />시가총액 상위 500위 밖으로 밀려났거나 상장에 변동이 있는 종목입니다.
+              재무·주가를 못 받아 <b>아래 진단·시뮬레이션에서 제외</b>됐어요.
+              {' '}필요하면 <code>screener.yml</code>의 <code>SCREENER_ALWAYS</code>에 코드를 넣어 강제 포함할 수 있습니다.
+              {missing.map((m) => (
+                <button key={m.code} className="wdir" style={{ marginLeft: 8 }}
+                  onClick={() => setItems(items.filter((x) => x.code !== m.code))}>{m.code} 삭제</button>
+              ))}
+            </div>
+          )}
           {found.length > 0 && (
             <p className="note">
               비중은 <b>합이 100%가 되도록 자동 환산</b>되니 아무 값이나 넣어도 됩니다.
@@ -2194,6 +2247,7 @@ function PfDiagnosis({ items, total }) {
             <span style={{ marginTop: 4 }}>{sub}</span></div>
         ))}
       </div>
+      <FiscalNote meta={items.map((i) => i.s)} />
       <table className="stats">
         <thead><tr><th>가중평균 지표</th><th>내 포트폴리오</th><th>산출 커버리지</th></tr></thead>
         <tbody>

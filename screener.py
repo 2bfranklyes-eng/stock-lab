@@ -5,6 +5,7 @@
 # ⚠️ 이 데이터로 '검증된 전략'은 못 만든다(sql/stocks.sql 주석 참고).
 #    생존편향(현재 상장 종목만) · 시점데이터 부재(최신 수정본) · 재무이력 4~5년.
 #    화면에서도 '과거에 이랬다'까지만 말한다.
+import datetime as dt
 import os
 import sys
 import time
@@ -53,9 +54,20 @@ def ysym(code, market):
     return f"{code}.{'KS' if market == 'KOSPI' else 'KQ'}"
 
 
+def epoch_date(ts):
+    """야후가 주는 유닉스 초 → 'YYYY-MM-DD'. 값이 없거나 이상하면 None."""
+    if not ts:
+        return None
+    try:
+        return dt.datetime.fromtimestamp(int(ts), dt.timezone.utc).strftime("%Y-%m-%d")
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
 def snapshot(row):
     """한 종목의 재무 지표. 한국 종목은 야후가 PER/PBR을 안 줘서 직접 계산한다.
-       PER = 시총÷순이익,  PBR = 시총÷자본 = PER × ROE (자본 = 순이익÷ROE)."""
+       PER = 시총÷순이익,  PBR = 시총÷자본 = PER × ROE (자본 = 순이익÷ROE).
+       fiscal_q/earnings_at도 같이 담는다 — '언제 기준 숫자인가'가 수집 시각보다 중요하다."""
     info = yf.Ticker(ysym(row["Code"], row["Market"])).info
     mc = info.get("marketCap")
     ni = info.get("netIncomeToCommon")
@@ -63,6 +75,8 @@ def snapshot(row):
     per = mc / ni if mc and ni and ni > 0 else None
     pbr = per * roe if per and roe and roe > 0 else None
     return {
+        "fiscal_q": epoch_date(info.get("mostRecentQuarter")),
+        "earnings_at": epoch_date(info.get("earningsTimestamp")),
         "code": row["Code"], "name": row["Name"], "market": row["Market"],
         "sector": info.get("sector"), "industry": info.get("industry"),
         "close": float(row["Close"]) if pd.notna(row["Close"]) else None,
@@ -144,7 +158,33 @@ def run_monthly(uni):
     print(f"stock_monthly 적재: {done}종목 / {len(rows)}행")
 
 
+def prune(uni):
+    """이번 유니버스에 없는 종목을 지운다. upsert만 하면 지난 실행의 잔재가 남는데,
+    그 종목들은 더 이상 갱신되지 않으면서 화면에선 멀쩡해 보인다(= 조용히 낡아간다).
+    보유 종목이 시총 상위에서 밀려나 사라지는 게 싫으면 SCREENER_ALWAYS 에 코드를 넣으면 된다."""
+    keep = set(uni["Code"]) | set(BENCH)
+    have = set()
+    frm = 0
+    while True:
+        d = sb.table("stock_meta").select("code").range(frm, frm + 999).execute().data
+        have |= {x["code"] for x in d}
+        if len(d) < 1000:
+            break
+        frm += 1000
+    drop = sorted(have - keep)
+    if not drop:
+        print("정리: 유니버스 밖 종목 없음")
+        return
+    for i in range(0, len(drop), 100):
+        chunk = drop[i:i + 100]
+        sb.table("stock_meta").delete().in_("code", chunk).execute()
+        sb.table("stock_monthly").delete().in_("code", chunk).execute()
+    print(f"정리: 유니버스 밖 {len(drop)}종목 삭제 — {', '.join(drop[:8])}"
+          f"{' …' if len(drop) > 8 else ''}")
+
+
 if __name__ == "__main__":
     uni = universe()
     run_meta(uni)
     run_monthly(uni)
+    prune(uni)

@@ -117,6 +117,7 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   .scr-q, .pf-add input, .pf-hits button { color: #f1f5f9; }
   .note.owarn-inline { background: #2a1f07; border-color: #78350f; color: #fcd34d; }
   .note.owarn-inline b { color: #fde68a; }
+  .stats.scr .scr-name .stale { background: #451a03; color: #fcd34d; }
   .freq-badge { background: #78350f; color: #fde68a; }
 }
 
@@ -212,6 +213,9 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .pf-hits button span { color: #94a3b8; font-size: 11px; margin-left: 6px; }
 .note.owarn-inline { color: #92400e; background: #fffbeb; border: 1px solid #fde68a;
   border-radius: 10px; padding: 9px 11px; }
+.note.fiscal { background: var(--track); border-radius: 10px; padding: 8px 11px; line-height: 1.6; }
+.stats.scr .scr-name .stale { display: inline-block; margin-left: 6px; font-style: normal;
+  font-size: 10px; padding: 1px 6px; border-radius: 999px; background: #fef3c7; color: #92400e; }
 
 /* 빈도 뱃지 (한국 실탄 '월간' 표시) */
 .freq-badge { display: inline-block; margin-left: 7px; padding: 1px 8px; font-size: 10px; font-weight: 700;

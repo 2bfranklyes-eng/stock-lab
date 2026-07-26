@@ -27,8 +27,13 @@ create table if not exists public.stock_meta (
   earn_growth     double precision,
   div_yield       double precision,
   beta            double precision,
+  -- 이 숫자들이 '언제 기준'인지. 수집 시각(updated_at)이 아니라 이쪽이 신선도의 척도다.
+  fiscal_q        date,                  -- 재무 기준 분기말 (예: 2026-03-31)
+  earnings_at     date,                  -- 실적발표일(야후 기준, 예정일일 수 있음)
   updated_at      timestamptz default now()
 );
+alter table public.stock_meta add column if not exists fiscal_q date;
+alter table public.stock_meta add column if not exists earnings_at date;
 
 -- 월말 종가 — 포트폴리오 과거 시뮬레이션용. 일별이면 프론트가 못 받아 월말로 압축.
 --   벤치마크는 code='KOSPI' / 'KOSDAQ' 로 같은 테이블에 넣는다.
