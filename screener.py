@@ -113,7 +113,8 @@ def run_meta(uni):
 
 
 def run_monthly(uni):
-    """월말 종가. 일별이면 프론트가 못 받는다 — 포트폴리오 단위 분석엔 월말로 충분."""
+    """월별 종가. 일별이면 프론트가 못 받는다 — 포트폴리오 단위 분석엔 월 단위로 충분.
+    ※ 진행 중인 달은 '그 달 마지막 거래일까지의 최신 종가'가 들어간다(월말 확정치가 아님)."""
     syms = [ysym(r["Code"], r["Market"]) for _, r in uni.iterrows()]
     code_of = {ysym(r["Code"], r["Market"]): r["Code"] for _, r in uni.iterrows()}
     for b, s in BENCH.items():
@@ -131,7 +132,10 @@ def run_monthly(uni):
             except (KeyError, TypeError):
                 continue
             for dt, v in s.tail(MONTHS).items():
-                rows.append({"code": code_of[sym], "dt": pd.Timestamp(dt).strftime("%Y-%m-%d"),
+                # 라벨을 반드시 '그 달 1일'로 맞춘다 — 야후가 종목에 따라 월중 날짜로 주는 경우가
+                # 있는데(상장 직후 등), 그러면 다른 종목과 겹치는 달이 없어져 시뮬레이션이 통째로 막힌다.
+                rows.append({"code": code_of[sym],
+                             "dt": pd.Timestamp(dt).strftime("%Y-%m-01"),
                              "close": rnd(v, 2)})
             done += 1
         print(f"  월말종가 {min(i + 100, len(syms))}/{len(syms)}")
