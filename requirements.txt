@@ -2,3 +2,4 @@ yfinance
 supabase
 python-dotenv
 pandas
+finance-datareader

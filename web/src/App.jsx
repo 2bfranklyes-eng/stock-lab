@@ -254,7 +254,35 @@ const TABS = [
   { key: 'mix', label: '종합', emoji: '🧭' },
   { key: 'cmp', label: '비교', emoji: '📊' },
   { key: 'ai', label: 'AI 사이클', emoji: '🤖' },
+  { key: 'scr', label: '종목', emoji: '🔎' },
+  { key: 'pf', label: '포트폴리오', emoji: '🧺' },
 ]
+
+// ── 개별 종목 (스크리너 · 포트폴리오 공용) ──
+// ⚠️ 무료 데이터의 한계상 '검증된 전략'을 만들 수 없다 — 생존편향(현재 상장 종목만),
+// 시점데이터 부재(재무제표가 최신 수정본), 재무이력 4~5년. 화면은 '지금 이렇다' /
+// '과거에 이랬다'까지만 말하고 미래 수익률은 주장하지 않는다.
+const FIN_COLS = [
+  { key: 'per', name: 'PER', fmt: (v) => v?.toFixed(1), lowGood: true, hint: '시총÷순이익. 낮을수록 싸다' },
+  { key: 'pbr', name: 'PBR', fmt: (v) => v?.toFixed(2), lowGood: true, hint: '시총÷자본. 낮을수록 싸다' },
+  { key: 'roe', name: 'ROE', fmt: (v) => (v * 100).toFixed(0) + '%', lowGood: false, hint: '자본 대비 이익. 높을수록 좋다' },
+  { key: 'op_margin', name: '영업이익률', fmt: (v) => (v * 100).toFixed(0) + '%', lowGood: false, hint: '매출 대비 영업이익' },
+  { key: 'debt_to_equity', name: '부채비율', fmt: (v) => v.toFixed(0), lowGood: true, hint: '자본 대비 부채. 낮을수록 안전' },
+  { key: 'rev_growth', name: '매출성장', fmt: (v) => (v > 0 ? '+' : '') + (v * 100).toFixed(0) + '%', lowGood: false, hint: '전년 대비 매출 증가율' },
+  { key: 'div_yield', name: '배당', fmt: (v) => v.toFixed(1) + '%', lowGood: false, hint: '배당수익률' },
+]
+const won = (v) => {
+  if (v == null) return '—'
+  if (v >= 1e12) return (v / 1e12).toFixed(1) + '조'
+  if (v >= 1e8) return Math.round(v / 1e8).toLocaleString() + '억'
+  return Math.round(v).toLocaleString()
+}
+// 데이터 한계를 화면 어디서나 같은 문장으로 — 탭마다 말이 달라지면 신뢰가 깨진다
+const STOCK_CAVEAT = (
+  <>⚠️ <b>이 숫자로 전략을 검증할 수는 없습니다.</b> 무료 데이터라 ① 과거 상장폐지된 종목이
+    목록에서 빠져 있고(생존편향) ② 재무제표가 당시 값이 아닌 최신 수정본이며
+    ③ 이력이 4~5년뿐입니다. <b>"지금 이 종목이 이렇다"까지가 정직한 한계</b>예요.</>
+)
 
 // ── 종합 탭: 4요인을 비율대로 합쳐 '투자 매력도' 하나로 ──
 // 방향(invert)은 개념 + 밴드 백테스트 근거로 정했다. 심리는 선형 상관이 약해도(한국 +0.08)
@@ -319,6 +347,8 @@ export default function App() {
       {tab === 'mix' && <CompositeSection />}
       {tab === 'cmp' && <ComparisonSection />}
       {tab === 'ai' && <AISection />}
+      {tab === 'scr' && <ScreenerSection />}
+      {tab === 'pf' && <PortfolioSection />}
     </div>
   )
 }
@@ -1873,6 +1903,400 @@ function AIMethod() {
         참고: 과거 사이클에서 SOX가 고점 후 12개월 내 -25% 이상 빠질 확률은 <b>29%</b>였습니다 —
         원래 변동성이 큰 지수라, 쏠림이 높다는 사실만으로 하락을 단정할 수 없어요.
       </p>
+    </section>
+  )
+}
+
+// stock_meta 전체를 한 번 받아 두 탭이 공유한다(500종목 = 1페이지 남짓).
+function useStockMeta() {
+  const [meta, setMeta] = useState(null)
+  const [state, setState] = useState('loading')
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        let all = [], from = 0
+        for (;;) {
+          const { data, error } = await supabase.from('stock_meta').select('*')
+            .order('marcap', { ascending: false }).order('code').range(from, from + 999)
+          if (error) throw error
+          all = all.concat(data || [])
+          if (!data || data.length < 1000) break
+          from += 1000
+        }
+        if (!alive) return
+        if (!all.length) { setState('empty'); return }
+        setMeta(all); setState('ok')
+      } catch (e) {
+        if (!alive) return
+        const msg = `${e?.message || ''} ${e?.code || ''}`
+        setState(/exist|find the table|PGRST205|42P01/i.test(msg) ? 'empty' : 'error')
+      }
+    })()
+    return () => { alive = false }
+  }, [])
+  return { meta, state }
+}
+
+function StockGate({ state, children }) {
+  if (state === 'loading') return <div className="col-msg">불러오는 중…</div>
+  if (state === 'error') return <div className="col-msg">데이터를 불러오지 못했어요</div>
+  if (state === 'empty') {
+    return (
+      <div className="col-msg soon">🚧<br /><b>데이터 준비 중</b><br />
+        <span>stock_meta 테이블 생성 + screener.py 실행 필요</span></div>
+    )
+  }
+  return children
+}
+
+// ── A. 스크리너 ──
+const SCR_PRESETS = [
+  { name: '전체', f: () => true },
+  { name: '저PER·흑자', f: (s) => s.per > 0 && s.per < 12 },
+  { name: '저PBR', f: (s) => s.pbr > 0 && s.pbr < 1 },
+  { name: '고ROE', f: (s) => s.roe > 0.15 },
+  { name: '저부채', f: (s) => s.debt_to_equity != null && s.debt_to_equity < 50 },
+  { name: '고성장', f: (s) => s.rev_growth > 0.2 },
+  { name: '배당', f: (s) => s.div_yield > 2 },
+]
+
+function ScreenerSection() {
+  const { meta, state } = useStockMeta()
+  const [preset, setPreset] = useState('전체')
+  const [market, setMarket] = useState('전체')
+  const [sort, setSort] = useState({ key: 'marcap', asc: false })
+  const [q, setQ] = useState('')
+
+  const rows = useMemo(() => {
+    if (!meta) return []
+    const pf = SCR_PRESETS.find((p) => p.name === preset).f
+    const out = meta.filter((s) => (market === '전체' || s.market === market)
+      && (!q || s.name?.includes(q) || s.code.includes(q)) && pf(s))
+    return out.sort((a, b) => {
+      const x = a[sort.key], y = b[sort.key]
+      if (x == null) return 1                 // 결측은 항상 뒤로 — 정렬 방향과 무관하게
+      if (y == null) return -1
+      return sort.asc ? x - y : y - x
+    })
+  }, [meta, preset, market, sort, q])
+
+  const click = (key) => setSort((s) => ({ key, asc: s.key === key ? !s.asc : false }))
+  return (
+    <>
+      <header>
+        <h1>종목 스크리너</h1>
+        <p className="lead">
+          시가총액 상위 종목을 <b>재무 지표로 걸러</b> 봅니다.
+          <b> 매수 추천이 아니라 "이런 특성을 가진 종목 목록"</b>이에요 — 아래 한계를 꼭 같이 읽어주세요.
+        </p>
+      </header>
+      <StockGate state={state}>
+        <section className="card">
+          <div className="seg">
+            {SCR_PRESETS.map((p) => (
+              <button key={p.name} className={preset === p.name ? 'on' : ''}
+                onClick={() => setPreset(p.name)}>{p.name}</button>
+            ))}
+          </div>
+          <div className="seg">
+            {['전체', 'KOSPI', 'KOSDAQ'].map((m) => (
+              <button key={m} className={market === m ? 'on' : ''} onClick={() => setMarket(m)}>{m}</button>
+            ))}
+            <input className="scr-q" placeholder="종목명·코드 검색"
+              value={q} onChange={(e) => setQ(e.target.value)} />
+          </div>
+          <p className="note">{rows.length}종목 · 열 제목을 누르면 정렬돼요 (결측값은 항상 아래로)</p>
+          <div className="scr-wrap">
+            <table className="stats scr">
+              <thead>
+                <tr>
+                  <th onClick={() => click('marcap')}>종목 {sort.key === 'marcap' ? (sort.asc ? '▲' : '▼') : ''}</th>
+                  {FIN_COLS.map((c) => (
+                    <th key={c.key} onClick={() => click(c.key)} title={c.hint}>
+                      {c.name} {sort.key === c.key ? (sort.asc ? '▲' : '▼') : ''}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.slice(0, 120).map((s) => (
+                  <tr key={s.code}>
+                    <td className="scr-name">
+                      <b>{s.name}</b>
+                      <span>{s.code} · {s.market} · {won(s.marcap)}</span>
+                    </td>
+                    {FIN_COLS.map((c) => (
+                      <td key={c.key}>{s[c.key] == null ? '—' : c.fmt(s[c.key])}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {rows.length > 120 && <p className="note">상위 120종목만 표시 중 — 필터나 검색으로 좁혀보세요.</p>}
+          <p className="note owarn-inline">{STOCK_CAVEAT}</p>
+        </section>
+      </StockGate>
+    </>
+  )
+}
+
+// ── B. 포트폴리오 구성·진단 ──
+const PF_LS_KEY = 'stocklab.pf.v1'
+function loadPf() {
+  try { return JSON.parse(localStorage.getItem(PF_LS_KEY)) || [] } catch { return [] }
+}
+
+function PortfolioSection() {
+  const { meta, state } = useStockMeta()
+  const [items, setItems] = useState(loadPf)     // [{code, w}]
+  const [q, setQ] = useState('')
+  const [prices, setPrices] = useState(null)
+
+  useEffect(() => {
+    try { localStorage.setItem(PF_LS_KEY, JSON.stringify(items)) } catch { /* 저장 불가 */ }
+  }, [items])
+
+  // 선택 종목 + 벤치마크의 월말 종가만 받는다(전 종목이면 프론트가 못 버틴다)
+  useEffect(() => {
+    let alive = true
+    const codes = items.map((i) => i.code)
+    if (!codes.length) { setPrices(null); return }
+    ;(async () => {
+      try {
+        let all = [], from = 0
+        const want = [...codes, 'KOSPI']
+        for (;;) {
+          const { data, error } = await supabase.from('stock_monthly').select('code,dt,close')
+            .in('code', want).order('dt').order('code').range(from, from + 999)
+          if (error) throw error
+          all = all.concat(data || [])
+          if (!data || data.length < 1000) break
+          from += 1000
+        }
+        if (alive) setPrices(all)
+      } catch { if (alive) setPrices([]) }
+    })()
+    return () => { alive = false }
+  }, [items])
+
+  const byCode = useMemo(() => Object.fromEntries((meta || []).map((s) => [s.code, s])), [meta])
+  const total = items.reduce((a, i) => a + (i.w || 0), 0)
+  const found = items.map((i) => ({ ...i, s: byCode[i.code] })).filter((i) => i.s)
+  const hits = q.length >= 1 && meta
+    ? meta.filter((s) => (s.name?.includes(q) || s.code.includes(q))
+        && !items.some((i) => i.code === s.code)).slice(0, 6)
+    : []
+
+  return (
+    <>
+      <header>
+        <h1>포트폴리오</h1>
+        <p className="lead">
+          종목과 비중을 넣으면 <b>지금 어떤 상태인지</b> 진단하고, 그 조합이 <b>과거에 어땠는지</b> 되짚어 봅니다.
+          <b> 앞으로의 수익률은 말하지 않습니다</b> — 오늘 여러 번 확인했듯 그건 이 데이터로 알 수 없어요.
+        </p>
+      </header>
+      <StockGate state={state}>
+        <section className="card">
+          <h2>🧺 종목 구성</h2>
+          <div className="pf-add">
+            <input placeholder="종목명 또는 코드로 검색해 추가"
+              value={q} onChange={(e) => setQ(e.target.value)} />
+            {hits.length > 0 && (
+              <div className="pf-hits">
+                {hits.map((s) => (
+                  <button key={s.code} onClick={() => {
+                    setItems([...items, { code: s.code, w: 10 }]); setQ('')
+                  }}>{s.name} <span>{s.code}</span></button>
+                ))}
+              </div>
+            )}
+          </div>
+          {found.length === 0 && <p className="note">아직 담은 종목이 없어요. 위에서 검색해 추가해보세요.</p>}
+          {found.map((it) => (
+            <div key={it.code} className="wrow">
+              <span className="wname" style={{ width: 108 }}>{it.s.name}</span>
+              <input type="range" min="0" max="100" step="1" value={it.w}
+                onChange={(e) => setItems(items.map((x) => x.code === it.code
+                  ? { ...x, w: +e.target.value } : x))} />
+              <input type="number" className="wnum" min="0" max="100" value={it.w}
+                onChange={(e) => setItems(items.map((x) => x.code === it.code
+                  ? { ...x, w: Math.max(0, Math.min(100, Math.round(+e.target.value) || 0)) } : x))} />
+              <span className="wpct">{total ? Math.round((it.w / total) * 100) : 0}%</span>
+              <button className="wdir" onClick={() => setItems(items.filter((x) => x.code !== it.code))}>삭제</button>
+            </div>
+          ))}
+          {found.length > 0 && (
+            <p className="note">
+              비중은 <b>합이 100%가 되도록 자동 환산</b>되니 아무 값이나 넣어도 됩니다.
+              구성은 이 브라우저에 저장돼 다음에도 그대로 열려요.
+            </p>
+          )}
+        </section>
+        {found.length > 0 && <PfDiagnosis items={found} total={total} />}
+        {found.length > 0 && <PfSimulation items={found} total={total} prices={prices} />}
+        {found.length > 0 && (
+          <section className="card method">
+            <h2>🧺 이 진단이 말할 수 있는 것 / 없는 것</h2>
+            <ul>
+              <li><b>말할 수 있는 것</b> — 지금 이 조합이 얼마나 한쪽에 쏠려 있는지, 재무적으로 어떤 종목들인지,
+                그리고 <b>이 비중을 과거에 유지했다면</b> 수익률·낙폭이 어땠을지.</li>
+              <li><b>말할 수 없는 것</b> — 앞으로의 수익률. 과거 시뮬레이션은 <b>지금 살아남은 종목</b>으로만
+                계산되므로 실제보다 좋게 나옵니다(생존편향).</li>
+            </ul>
+            <p className="note owarn-inline">{STOCK_CAVEAT}</p>
+          </section>
+        )}
+      </StockGate>
+    </>
+  )
+}
+
+function PfDiagnosis({ items, total }) {
+  const wOf = (it) => (total ? it.w / total : 0)
+  // 가중 평균은 값이 있는 종목끼리만 — 결측을 0으로 치면 지표가 실제보다 좋아 보인다
+  const wavg = (key) => {
+    let num = 0, den = 0
+    for (const it of items) {
+      const v = it.s[key]
+      if (v == null) continue
+      num += v * wOf(it); den += wOf(it)
+    }
+    return den > 0 ? { v: num / den, cover: den } : null
+  }
+  const sorted = [...items].sort((a, b) => b.w - a.w)
+  const top3 = sorted.slice(0, 3).reduce((a, i) => a + wOf(i), 0) * 100
+  const hhi = items.reduce((a, i) => a + Math.pow(wOf(i) * 100, 2), 0)   // 허핀달 집중도
+  const eff = hhi > 0 ? 10000 / hhi : 0                                  // 실효 종목 수
+  const sectors = {}
+  for (const it of items) {
+    const k = it.s.sector || '미분류'
+    sectors[k] = (sectors[k] || 0) + wOf(it) * 100
+  }
+  const topSector = Object.entries(sectors).sort((a, b) => b[1] - a[1])[0]
+  const risky = items.filter((i) => i.s.debt_to_equity > 200 || (i.s.op_margin != null && i.s.op_margin < 0))
+
+  const cells = [
+    ['종목 수', items.length + '개', `실효 ${eff.toFixed(1)}개`],
+    ['상위 3종목', top3.toFixed(0) + '%', top3 > 70 ? '매우 집중' : top3 > 50 ? '집중' : '분산'],
+    ['최대 섹터', topSector ? `${topSector[1].toFixed(0)}%` : '—', topSector ? topSector[0] : ''],
+  ]
+  return (
+    <section className="card outlook">
+      <h2>📋 현재 상태 진단</h2>
+      <div className="ocells">
+        {cells.map(([label, big, sub]) => (
+          <div key={label}><span>{label}</span><b>{big}</b>
+            <span style={{ marginTop: 4 }}>{sub}</span></div>
+        ))}
+      </div>
+      <table className="stats">
+        <thead><tr><th>가중평균 지표</th><th>내 포트폴리오</th><th>산출 커버리지</th></tr></thead>
+        <tbody>
+          {FIN_COLS.map((c) => {
+            const r = wavg(c.key)
+            return (
+              <tr key={c.key}>
+                <td title={c.hint}>{c.name}</td>
+                <td style={{ fontWeight: 700 }}>{r ? c.fmt(r.v) : '—'}</td>
+                <td style={{ color: '#94a3b8' }}>{r ? `비중의 ${(r.cover * 100).toFixed(0)}%` : '자료 없음'}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+      {risky.length > 0 && (
+        <div className="owarn">
+          <b>재무 부담이 큰 종목 {risky.length}개</b> — {risky.map((r) => r.s.name).join(', ')}
+          <br />부채비율 200% 초과이거나 영업이익이 적자입니다. 사업 내용을 따로 확인해보세요.
+        </div>
+      )}
+      <p className="note">
+        <b>실효 종목 수</b>는 비중까지 반영한 분산 정도예요 — 10종목을 담아도 하나에 80%면 실효는 1.5개에 가깝습니다.
+        <b> 커버리지</b>는 그 지표를 계산할 수 있었던 비중의 몫이고요(적자 기업은 PER이 없는 식).
+      </p>
+    </section>
+  )
+}
+
+function PfSimulation({ items, total, prices }) {
+  const [years, setYears] = useState(3)
+  const sim = useMemo(() => {
+    if (!prices || !prices.length) return null
+    const byCode = {}
+    for (const r of prices) (byCode[r.code] ||= {})[r.dt] = r.close
+    const codes = items.map((i) => i.code)
+    // 모든 보유 종목에 값이 있는 달만 사용 — 상장 이전 구간을 0으로 치면 안 된다
+    const dts = Object.keys(byCode['KOSPI'] || {}).sort()
+      .filter((d) => codes.every((c) => byCode[c]?.[d] != null))
+    const use = dts.slice(-(years * 12 + 1))
+    if (use.length < 13) return { thin: true, n: use.length }
+    const w = Object.fromEntries(items.map((i) => [i.code, total ? i.w / total : 0]))
+    let pv = 100, bv = 100, peak = 100, mdd = 0
+    const series = [{ dt: use[0], pf: 100, bm: 100 }]
+    const rets = []
+    for (let k = 1; k < use.length; k++) {
+      let r = 0                       // 매월 비중 재조정 가정(가장 단순한 기준선)
+      for (const c of codes) r += w[c] * (byCode[c][use[k]] / byCode[c][use[k - 1]] - 1)
+      rets.push(r)
+      pv *= 1 + r
+      bv *= byCode['KOSPI'][use[k]] / byCode['KOSPI'][use[k - 1]]
+      peak = Math.max(peak, pv)
+      mdd = Math.min(mdd, pv / peak - 1)
+      series.push({ dt: use[k], pf: +pv.toFixed(1), bm: +bv.toFixed(1) })
+    }
+    const m = rets.reduce((a, b) => a + b, 0) / rets.length
+    const sd = Math.sqrt(rets.reduce((a, b) => a + (b - m) ** 2, 0) / rets.length)
+    return { series, ret: pv - 100, bench: bv - 100, mdd: mdd * 100, vol: sd * Math.sqrt(12) * 100, n: rets.length }
+  }, [prices, items, total, years])
+
+  if (!prices) return <section className="card"><h2>📈 과거 시뮬레이션</h2><p className="note">가격 불러오는 중…</p></section>
+  if (!sim || sim.thin) {
+    return (
+      <section className="card">
+        <h2>📈 과거 시뮬레이션</h2>
+        <p className="note">
+          모든 보유 종목에 가격이 함께 있는 달이 {sim?.n ?? 0}개월뿐이라 계산할 수 없어요.
+          상장한 지 얼마 안 된 종목이 섞여 있으면 이렇게 됩니다.
+        </p>
+      </section>
+    )
+  }
+  const beat = sim.ret - sim.bench
+  return (
+    <section className="card outlook">
+      <h2>📈 과거 시뮬레이션 <span style={{ fontWeight: 400, color: '#94a3b8' }}>(지금 비중을 그때부터 유지했다면)</span></h2>
+      <div className="seg">
+        {[1, 3, 5, 10].map((y) => (
+          <button key={y} className={years === y ? 'on' : ''} onClick={() => setYears(y)}>{y}년</button>
+        ))}
+      </div>
+      <div className="ocells">
+        <div><span>누적 수익률</span><b style={{ color: sim.ret > 0 ? '#1e8449' : '#c0392b' }}>
+          {sim.ret > 0 ? '+' : ''}{sim.ret.toFixed(0)}%</b></div>
+        <div><span>코스피 대비</span><b style={{ color: beat > 0 ? '#1e8449' : '#c0392b' }}>
+          {beat > 0 ? '+' : ''}{beat.toFixed(0)}%p</b></div>
+        <div><span>최대 낙폭</span><b style={{ color: '#c0392b' }}>{sim.mdd.toFixed(0)}%</b></div>
+        <div><span>연 변동성</span><b>{sim.vol.toFixed(0)}%</b></div>
+      </div>
+      <ResponsiveContainer width="100%" height={230}>
+        <LineChart data={sim.series} margin={{ top: 12, right: 8, left: -20, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
+          <XAxis dataKey="dt" tick={{ fontSize: 10 }} minTickGap={44} />
+          <YAxis domain={['auto', 'auto']} tick={{ fontSize: 10 }} width={42} />
+          <Tooltip formatter={(v, n) => [v.toFixed(1), n]} wrapperStyle={{ outline: 'none' }} />
+          <ReferenceLine y={100} stroke="#94a3b8" strokeDasharray="3 3" />
+          <Line type="monotone" dataKey="bm" name="코스피" stroke="#94a3b8" dot={false} strokeWidth={1.4} isAnimationActive={false} />
+          <Line type="monotone" dataKey="pf" name="내 포트폴리오" stroke="#d97706" dot={false} strokeWidth={2.4} isAnimationActive={false} />
+        </LineChart>
+      </ResponsiveContainer>
+      <div className="owarn">
+        <b>이건 예측이 아니라 되짚기입니다.</b> 매월 지금 비중으로 재조정했다고 가정했고,
+        세금·거래비용·배당을 넣지 않았습니다. 무엇보다 <b>지금 살아남은 종목</b>으로만 계산한 값이라
+        실제 성적보다 좋게 나옵니다({sim.n}개월 기준).
+      </div>
     </section>
   )
 }
