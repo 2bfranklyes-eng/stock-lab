@@ -1959,12 +1959,10 @@ function FiscalNote({ meta, codes = null }) {
   const older = sorted.filter(([q]) => q < top).reduce((a, [, c]) => a + c, 0)
   return (
     <p className="note fiscal">
-      📅 <b>재무 기준: {top} 분기</b> — 표에서 <b>뱃지가 없는 {n}종목은 모두 이 날짜 기준</b>입니다.
-      <br />
-      기준일이 다른 종목만 노란 뱃지로 표시했어요
-      {newer > 0 && <> · <b>더 최신</b> {newer}종목(2분기 실적을 먼저 낸 기업)</>}
-      {older > 0 && <> · <b>더 이전</b> {older}종목</>}
-      {none > 0 && <> · <b>기준일 미상</b> {none}종목(야후가 안 줌)</>}
+      📅 <b>재무 기준일을 종목마다 표시</b>했어요. 가장 많은 건 <b>{top} 분기</b>({n}종목)
+      {newer > 0 && <> · <span className="fq fresh">더 최신</span> {newer}종목(2분기 실적을 먼저 낸 기업)</>}
+      {older > 0 && <> · <span className="fq stale">더 이전</span> {older}종목</>}
+      {none > 0 && <> · <span className="fq stale">기준일 미상</span> {none}종목(야후가 안 줌)</>}
       <br />
       재무 숫자는 <b>분기에 한 번</b>만 바뀌고 <b>분기말 +45일 공시 → 반영</b>이라 늘 2~4개월 뒤처집니다.
       주가·시가총액은 주 1회(토요일) 갱신돼요.
@@ -2067,12 +2065,12 @@ function ScreenerSection() {
                     <td className="scr-name">
                       <b>{s.name}</b>
                       <span>{s.code} · {s.market} · {won(s.marcap)}
-                        {topQ && s.fiscal_q !== topQ && (
-                          // 다수보다 최신인 건 경고가 아니라 오히려 좋은 것 → 색을 갈라 쓴다
-                          <em className={s.fiscal_q > topQ ? 'fresh' : 'stale'}>
-                            {s.fiscal_q ? `재무 ${s.fiscal_q}` : '재무 기준일 없음'}
-                          </em>
-                        )}
+                        {/* 모든 행에 기준일을 적는다 — '뱃지 없음 = 다수 날짜'는 화면만 봐선 알 수 없다.
+                            색으로 구분: 다수와 같으면 무채색, 더 최신이면 초록, 더 이전·미상이면 노랑. */}
+                        <em className={!s.fiscal_q || (topQ && s.fiscal_q < topQ) ? 'stale'
+                          : topQ && s.fiscal_q > topQ ? 'fresh' : 'same'}>
+                          {s.fiscal_q ? `재무 ${s.fiscal_q}` : '재무 기준일 없음'}
+                        </em>
                       </span>
                     </td>
                     {FIN_COLS.map((c) => (
