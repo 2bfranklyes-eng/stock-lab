@@ -1953,12 +1953,18 @@ function FiscalNote({ meta, codes = null }) {
     return <p className="note fiscal">📅 재무 기준일 정보가 아직 없어요 — screener.py 재실행이 필요합니다.</p>
   }
   const [top, n] = sorted[0]
-  const older = sorted.slice(1).reduce((a, [, c]) => a + c, 0)
+  // 다수 분기보다 '최신'인 종목과 '이전'인 종목을 갈라 센다.
+  // 이걸 합쳐 "더 오래된"이라고 쓰면 2분기를 먼저 낸 기업(현대차 등)이 낡은 것처럼 읽힌다.
+  const newer = sorted.filter(([q]) => q > top).reduce((a, [, c]) => a + c, 0)
+  const older = sorted.filter(([q]) => q < top).reduce((a, [, c]) => a + c, 0)
   return (
     <p className="note fiscal">
-      📅 <b>재무 기준: {top} 분기</b> ({rows.length}종목 중 {n}종목
-      {older > 0 && <>, 더 오래된 분기 {older}종목</>}
-      {none > 0 && <>, 기준일 미상 {none}종목</>})
+      📅 <b>재무 기준: {top} 분기</b> — 표에서 <b>뱃지가 없는 {n}종목은 모두 이 날짜 기준</b>입니다.
+      <br />
+      기준일이 다른 종목만 노란 뱃지로 표시했어요
+      {newer > 0 && <> · <b>더 최신</b> {newer}종목(2분기 실적을 먼저 낸 기업)</>}
+      {older > 0 && <> · <b>더 이전</b> {older}종목</>}
+      {none > 0 && <> · <b>기준일 미상</b> {none}종목(야후가 안 줌)</>}
       <br />
       재무 숫자는 <b>분기에 한 번</b>만 바뀌고 <b>분기말 +45일 공시 → 반영</b>이라 늘 2~4개월 뒤처집니다.
       주가·시가총액은 주 1회(토요일) 갱신돼요.
@@ -2062,7 +2068,10 @@ function ScreenerSection() {
                       <b>{s.name}</b>
                       <span>{s.code} · {s.market} · {won(s.marcap)}
                         {topQ && s.fiscal_q !== topQ && (
-                          <em className="stale">{s.fiscal_q ? `재무 ${s.fiscal_q}` : '재무 기준일 없음'}</em>
+                          // 다수보다 최신인 건 경고가 아니라 오히려 좋은 것 → 색을 갈라 쓴다
+                          <em className={s.fiscal_q > topQ ? 'fresh' : 'stale'}>
+                            {s.fiscal_q ? `재무 ${s.fiscal_q}` : '재무 기준일 없음'}
+                          </em>
                         )}
                       </span>
                     </td>
