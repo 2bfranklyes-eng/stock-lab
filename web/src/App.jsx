@@ -1971,8 +1971,9 @@ function ScreenerSection() {
   const rows = useMemo(() => {
     if (!meta) return []
     const pf = SCR_PRESETS.find((p) => p.name === preset).f
+    const k = q.trim().toLowerCase()     // 'sfa'로 쳐도 'SFA반도체'가 걸리게
     const out = meta.filter((s) => (market === '전체' || s.market === market)
-      && (!q || s.name?.includes(q) || s.code.includes(q)) && pf(s))
+      && (!k || s.name?.toLowerCase().includes(k) || s.code.includes(k)) && pf(s))
     return out.sort((a, b) => {
       const x = a[sort.key], y = b[sort.key]
       if (x == null) return 1                 // 결측은 항상 뒤로 — 정렬 방향과 무관하게
@@ -2084,8 +2085,9 @@ function PortfolioSection() {
   const byCode = useMemo(() => Object.fromEntries((meta || []).map((s) => [s.code, s])), [meta])
   const total = items.reduce((a, i) => a + (i.w || 0), 0)
   const found = items.map((i) => ({ ...i, s: byCode[i.code] })).filter((i) => i.s)
-  const hits = q.length >= 1 && meta
-    ? meta.filter((s) => (s.name?.includes(q) || s.code.includes(q))
+  const k = q.trim().toLowerCase()      // 'sfa'로 쳐도 'SFA넥셀'이 걸리게
+  const hits = k && meta
+    ? meta.filter((s) => (s.name?.toLowerCase().includes(k) || s.code.includes(k))
         && !items.some((i) => i.code === s.code)).slice(0, 6)
     : []
 

@@ -28,11 +28,19 @@ ALWAYS = [c.strip() for c in os.environ.get("SCREENER_ALWAYS", "").split(",") if
 BENCH = {"KOSPI": "^KS11", "KOSDAQ": "^KQ11"}
 
 
+# FDR의 Market 값 → 우리 표기. 'KOSDAQ GLOBAL'은 코스닥 안의 우량기업 세그먼트라
+# 값이 따로 나오는데, 이걸 빼먹으면 50종목이 통째로 사라진다(SFA넥셀 등). KONEX도 받아
+# 두되 시총 상위에는 사실상 안 들어오므로 SCREENER_ALWAYS 로만 실효가 있다.
+MARKET_MAP = {"KOSPI": "KOSPI", "KOSDAQ": "KOSDAQ",
+              "KOSDAQ GLOBAL": "KOSDAQ", "KONEX": "KONEX"}
+
+
 def universe():
     """FDR 전 종목 목록에서 시총 상위 N + 지정 코드. Marcap이 있어 한 번에 순위가 난다."""
     import FinanceDataReader as fdr
     d = fdr.StockListing("KRX")
-    d = d[d["Market"].isin(["KOSPI", "KOSDAQ"])].dropna(subset=["Marcap"])
+    d = d[d["Market"].isin(MARKET_MAP)].dropna(subset=["Marcap"]).copy()
+    d["Market"] = d["Market"].map(MARKET_MAP)   # KOSDAQ GLOBAL → KOSDAQ 로 통일
     top = d.nlargest(TOP_N, "Marcap")
     extra = d[d["Code"].isin(ALWAYS) & ~d["Code"].isin(top["Code"])]
     out = pd.concat([top, extra])
@@ -41,7 +49,8 @@ def universe():
 
 
 def ysym(code, market):
-    return f"{code}.{'KQ' if market == 'KOSDAQ' else 'KS'}"
+    # 코스닥(글로벌 세그먼트 포함)·코넥스는 .KQ, 코스피는 .KS
+    return f"{code}.{'KS' if market == 'KOSPI' else 'KQ'}"
 
 
 def snapshot(row):
