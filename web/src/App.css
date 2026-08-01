@@ -86,6 +86,14 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .setup code { background: rgba(148,163,184,.2); padding: 2px 7px; border-radius: 6px; font-size: 90%; }
 .setup p { line-height: 1.7; color: #64748b; }
 
+/* ── 매물대 탭: 가격대별 가로 막대 ── */
+.vp-row { display: flex; align-items: center; gap: 8px; height: 9px; }
+.vp-price { flex: 0 0 56px; font-size: 10px; color: #94a3b8; text-align: right; line-height: 1; }
+.vp-bar { height: 7px; border-radius: 2px; opacity: .85; }
+.vp-now { position: relative; border-top: 2px dashed #d97706; margin: 3px 0 3px 64px; }
+.vp-now span { position: absolute; right: 0; top: -8px; font-size: 10px; font-weight: 700;
+  color: #d97706; background: var(--card); padding: 0 4px; }
+
 /* ── 모바일: 세로로 쌓기 ── */
 @media (max-width: 640px) {
   .cols { flex-direction: column; gap: 8px; }

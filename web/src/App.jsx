@@ -253,6 +253,7 @@ const TABS = [
   { key: 'fuel', label: '실탄', emoji: '💰' },
   { key: 'mix', label: '종합', emoji: '🧭' },
   { key: 'cmp', label: '비교', emoji: '📊' },
+  { key: 'vp', label: '매물대', emoji: '⛰️' },
   { key: 'ai', label: 'AI 사이클', emoji: '🤖' },
   { key: 'scr', label: '종목', emoji: '🔎' },
   { key: 'pf', label: '포트폴리오', emoji: '🧺' },
@@ -346,6 +347,7 @@ export default function App() {
       {tab === 'fuel' && <FuelSection />}
       {tab === 'mix' && <CompositeSection />}
       {tab === 'cmp' && <ComparisonSection />}
+      {tab === 'vp' && <ProfileSection />}
       {tab === 'ai' && <AISection />}
       {tab === 'scr' && <ScreenerSection />}
       {tab === 'pf' && <PortfolioSection />}
@@ -1283,6 +1285,148 @@ function ComparisonMethod() {
         <li><b>유의한 신호</b> — 🇺🇸 실탄 '풍부' 뒤 이후20일 +2.8%(독립표본 26개, p&lt;0.01) 정도가 통계적으로 뚜렷.</li>
       </ul>
       <p className="note">지수가 주가와 <b>겹쳐 움직이면(동행)</b> 상태를 잘 잡는 것. 예측은 <b>극단에서만</b> 약하게 기대하세요.</p>
+    </section>
+  )
+}
+
+// ── 매물대 섹션: profile.py가 매일 적재하는 volume_profile을 그대로 그림 ──
+// 모델: 하루 거래량을 고가~저가에 배분 + Grinblatt&Han식 회전율 감쇠(과거 물량이 매일
+// 그날 회전율만큼 비례 소진). '아직 안 팔린 물량'이 어느 가격대에 얼마나 남았는지의 근사.
+const VP_CODES = [
+  { code: 'kospi', name: '🇰🇷 코스피' }, { code: 'kosdaq', name: '🇰🇷 코스닥' },
+  { code: 'spx', name: '🇺🇸 S&P500' }, { code: 'nasdaq', name: '🇺🇸 나스닥' },
+  { code: 'dow', name: '🇺🇸 다우' },
+]
+const VP_WINS = [
+  { days: 1825, label: '5년' }, { days: 1095, label: '3년' }, { days: 730, label: '2년' },
+  { days: 365, label: '1년' }, { days: 182, label: '6개월' }, { days: 91, label: '3개월' },
+  { days: 30, label: '1개월' },
+]
+
+function ProfileSection() {
+  const [code, setCode] = useState('kospi')
+  const [win, setWin] = useState(365)
+  const [rows, setRows] = useState([])
+  const [state, setState] = useState('loading')
+
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      setState('loading')
+      try {
+        const { data, error } = await supabase
+          .from('volume_profile').select('*')
+          .eq('code', code).eq('win_days', win)
+          .order('bin_lo', { ascending: false })   // 위(고가) → 아래(저가)로 그림
+        if (error) throw error
+        if (!alive) return
+        if (!data || data.length === 0) { setState('empty'); return }
+        setRows(data); setState('ok')
+      } catch {
+        if (alive) setState('error')
+      }
+    })()
+    return () => { alive = false }
+  }, [code, win])
+
+  return (
+    <>
+      <header>
+        <h1>매물대</h1>
+        <p className="lead">
+          가격대별로 <b>아직 안 팔린 물량(미소화 매물)</b>이 얼마나 쌓여 있는지 추정합니다.
+          현재가 <b>위 매물은 반등을 막는 저항</b>, 아래 매물은 지지 · <b>얇은 구간은 진공</b>(가격이 빠르게 통과).
+          집계 구간을 바꿔 <b>언제 쌓인 매물인지</b> 나눠 보세요.
+        </p>
+      </header>
+      <div className="seg">
+        {VP_CODES.map((c) => (
+          <button key={c.code} className={code === c.code ? 'on' : ''} onClick={() => setCode(c.code)}>
+            {c.name}
+          </button>
+        ))}
+      </div>
+      <div className="seg">
+        {VP_WINS.map((w) => (
+          <button key={w.days} className={win === w.days ? 'on' : ''} onClick={() => setWin(w.days)}>
+            {w.label}
+          </button>
+        ))}
+      </div>
+      {state === 'loading' && <div className="col-msg">불러오는 중…</div>}
+      {state === 'error' && <div className="col-msg">데이터를 불러오지 못했어요</div>}
+      {state === 'empty' && (
+        <div className="col-msg soon">
+          🚧<br /><b>데이터 준비 중</b><br />
+          <span>다음 자동 갱신(평일 아침 7시) 후에 채워져요</span>
+        </div>
+      )}
+      {state === 'ok' && <ProfileBody rows={rows} />}
+      <ProfileMethod />
+    </>
+  )
+}
+
+function ProfileBody({ rows }) {
+  const px = rows[0].px
+  const dt = rows[0].dt
+  const max = Math.max(...rows.map((r) => r.share))
+  const mid = (r) => (r.bin_lo + r.bin_hi) / 2
+  const upShare = rows.filter((r) => mid(r) > px).reduce((s, r) => s + r.share, 0)
+  const above = rows.filter((r) => mid(r) > px)
+  const wall = above.length ? above.reduce((a, b) => (b.share > a.share ? b : a)) : null
+  const fmt = (v) => Math.round(v).toLocaleString()
+  // 가격 라벨은 12개 안팎만 (90구간을 다 쓰면 겹쳐서 못 읽음)
+  const step = Math.max(1, Math.ceil(rows.length / 12))
+  // 현재가 표시선: 현재가가 속한 구간 위에 그린다
+  const nowIdx = rows.findIndex((r) => r.bin_lo <= px)
+  return (
+    <>
+      <div className="raw-figs">
+        <div className="raw-fig"><span className="rf-label">현재가 ({dt})</span><span className="rf-val">{fmt(px)}</span></div>
+        <div className="raw-fig"><span className="rf-label">현재가 위 매물</span>
+          <span className="rf-val" style={{ color: upShare > 60 ? '#c0392b' : undefined }}>{Math.round(upShare)}%</span></div>
+        <div className="raw-fig"><span className="rf-label">최대 저항(본전 매물 벽)</span>
+          <span className="rf-val">{wall ? `${fmt(wall.bin_lo)}~${fmt(wall.bin_hi)} (+${(mid(wall) / px * 100 - 100).toFixed(1)}%)` : '없음 (신고가 영역)'}</span></div>
+      </div>
+      <section className="card">
+        <div className="vp-bars">
+          {rows.map((r, i) => (
+            <div key={r.bin_lo}>
+              {i === nowIdx && <div className="vp-now"><span>현재가 {fmt(px)}</span></div>}
+              <div className="vp-row">
+                <span className="vp-price">{i % step === 0 ? fmt(r.bin_lo) : ''}</span>
+                <div className="vp-bar" style={{
+                  width: `${Math.max(0.5, r.share / max * 100)}%`,
+                  background: mid(r) > px ? '#c0392b' : '#2471a3',
+                }} />
+              </div>
+            </div>
+          ))}
+        </div>
+        <p className="note">
+          <b style={{ color: '#c0392b' }}>빨강</b> = 현재가 위(반등 시 본전 매도 압력) ·{' '}
+          <b style={{ color: '#2471a3' }}>파랑</b> = 아래(하락 시 받치는 손바뀜 물량) ·
+          막대 길이 = 잔존 물량(최대=1). 막대가 짧은 곳은 <b>진공 구간</b> — 가격이 빠르게 지나가기 쉬워요.
+        </p>
+      </section>
+    </>
+  )
+}
+
+function ProfileMethod() {
+  return (
+    <section className="card method">
+      <h2>⛰️ 어떻게 계산하나요?</h2>
+      <ul>
+        <li><b>배분</b> — 하루 거래량을 그날 고가~저가 가격 구간에 나눠 쌓습니다(볼륨 프로파일).</li>
+        <li><b>소진</b> — 쌓인 물량은 매일 <b>그날 회전율만큼 비례로 손바뀜</b>돼 줄어듭니다
+          (Grinblatt&amp;Han 2005). 급등락이 반복되면 회전율이 치솟아 옛 매물이 빨리 소화돼요.</li>
+        <li><b>집계 구간</b> — 5년~1개월로 잘라 계산합니다. 짧은 구간 = 최근 진입자의 물량만 본 것.</li>
+      </ul>
+      <p className="note">⚠️ <b>한계</b>: 지수는 개별 종목의 합성이라 매물대 개념이 개별주보다 흐릿합니다.
+        회전율은 유통주식수 대신 <b>직전 1년 거래량 합 대비</b>로 근사 · 코스피/코스닥 거래량은 KRX 기준(NXT 미포함) ·
+        일봉이라 장중 가격대 배분은 균등 가정 · 파생/ETF 간접 물량은 안 잡힙니다. <b>정밀 측정이 아니라 구조 파악용</b>이에요.</p>
     </section>
   )
 }

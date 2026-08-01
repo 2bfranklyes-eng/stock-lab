@@ -6,3 +6,6 @@ venv/
 
 # Claude Code 로컬 설정(개발서버 실행 정의) — 저장소에 넣지 않음
 .claude/
+
+# profile.py 로컬 실행 결과(매물대 PNG) — 대시보드가 본체라 저장소엔 불필요
+profile_*.png
