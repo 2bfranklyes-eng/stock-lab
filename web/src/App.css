@@ -98,8 +98,10 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 /* ── 매물대 탭: 가격대별 가로 막대 위에 주가선을 겹침 (같은 가격 축) ── */
 .vp-wrap { position: relative; }
 .vp-bars { position: relative; }
-/* 주가선이 지나가는 자리라 막대는 옅게 — 선이 막대에 묻히면 겹쳐 볼 이유가 없다 */
-.vp-overlay { position: absolute; left: 64px; right: 0; top: 0; height: 100%;
+/* 주가선이 지나가는 자리라 막대는 옅게 — 선이 막대에 묻히면 겹쳐 볼 이유가 없다.
+   width를 명시해야 한다: SVG는 width가 auto면 viewBox 비율로 제 폭을 정해버려서
+   right:0 이 무시되고 100px짜리로 쪼그라든다. */
+.vp-overlay { position: absolute; left: 64px; top: 0; width: calc(100% - 64px); height: 100%;
   pointer-events: none; overflow: visible; }
 .vp-chart-cap { font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px; }
 .vp-row { display: flex; align-items: center; gap: 8px; height: 9px; cursor: crosshair; }
@@ -135,7 +137,8 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   .vp-bar { height: 9px; }
   .vp-price { flex-basis: 48px; }
   /* 막대 시작 x = 가격라벨 폭(48) + .vp-row gap(8). 이 값이 어긋나면 선과 막대가 가로로 밀린다 */
-  .vp-now, .vp-overlay { left: 56px; }
+  .vp-now { left: 56px; }
+  .vp-overlay { left: 56px; width: calc(100% - 56px); }
 }
 
 :root { --card: #ffffff; --line: #e2e8f0; --track: #eef2f6; }
