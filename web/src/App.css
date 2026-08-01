@@ -86,6 +86,15 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .setup code { background: rgba(148,163,184,.2); padding: 2px 7px; border-radius: 6px; font-size: 90%; }
 .setup p { line-height: 1.7; color: #64748b; }
 
+/* ── 매물대 탭: 종목 검색 ── */
+.vp-search { position: relative; margin: 0 0 10px; max-width: 320px; }
+.vp-search input { width: 100%; font: inherit; font-size: 13px; padding: 7px 30px 7px 12px;
+  border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: inherit; }
+.vp-search input:focus { outline: none; border-color: #d97706; }
+.vp-clear { position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  border: none; background: none; color: #94a3b8; cursor: pointer; font-size: 12px; padding: 4px 8px; }
+.vp-none { font-size: 11px; color: #94a3b8; align-self: center; margin-left: 4px; }
+
 /* ── 매물대 탭: 가격대별 가로 막대 ── */
 .vp-row { display: flex; align-items: center; gap: 8px; height: 9px; }
 .vp-price { flex: 0 0 56px; font-size: 10px; color: #94a3b8; text-align: right; line-height: 1; }

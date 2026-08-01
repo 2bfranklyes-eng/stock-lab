@@ -1310,25 +1310,49 @@ function ProfileSection() {
   const [rows, setRows] = useState([])
   const [state, setState] = useState('loading')
   const [stocks, setStocks] = useState([])
+  const [q, setQ] = useState('')
 
-  // 종목 목록은 stock_meta(스크리너와 같은 원자료)에서. 매물대가 있는 종목만 고르진 않는다 —
-  // 없으면 '데이터 준비 중'으로 안내되고, 목록을 두 번 조회하는 것보다 싸다.
+  // 종목 목록은 vp_stocks — 매물대가 실제로 계산된 종목의 단일 출처라
+  // '검색은 되는데 데이터가 없는' 불일치가 생기지 않는다. (1,700여 종목이라 페이지네이션)
   useEffect(() => {
     let alive = true
     ;(async () => {
-      const { data } = await supabase.from('stock_meta').select('code,name,marcap')
-        .order('marcap', { ascending: false }).limit(30)
-      if (alive && data) setStocks(data.map((r) => ({ code: r.code, name: r.name })))
+      let all = []
+      for (let from = 0; from < 4000; from += 1000) {
+        const { data } = await supabase.from('vp_stocks').select('code,name,market,hist_days')
+          .order('marcap', { ascending: false }).range(from, from + 999)
+        if (!data || !data.length) break
+        all = all.concat(data)
+        if (data.length < 1000) break
+      }
+      if (alive) setStocks(all)
     })()
     return () => { alive = false }
   }, [])
 
-  const options = mode === 'idx' ? VP_CODES : stocks
+  const stock = stocks.find((s) => s.code === code)
+  // 검색: 종목명 부분일치 또는 코드 앞자리. 시총 순으로 이미 정렬돼 있어 상위가 먼저 걸린다.
+  const hits = useMemo(() => {
+    const k = q.trim().toLowerCase()
+    if (!k) return stocks.slice(0, 24)
+    return stocks.filter((s) => s.name.toLowerCase().includes(k) || s.code.startsWith(k)).slice(0, 24)
+  }, [q, stocks])
+  const options = mode === 'idx' ? VP_CODES : hits
+  // 2년치뿐인 종목에 '5년' 버튼을 남기면 2년 그림이 5년인 척하게 된다 → 보유 구간까지만 노출
+  const wins = mode === 'idx' || !stock ? VP_WINS
+    : VP_WINS.filter((w) => w.days <= stock.hist_days)
+
   function switchMode(m) {
     if (m === mode) return
     setMode(m)
     setCode(m === 'idx' ? 'kospi' : (stocks[0]?.code || ''))
+    if (m === 'idx' && win > 1825) setWin(365)
   }
+
+  // 5년 창을 보다가 2년치뿐인 종목으로 옮기면 조회가 빈 결과가 된다 → 보유 구간으로 내린다
+  useEffect(() => {
+    if (stock && win > stock.hist_days) setWin(stock.hist_days)
+  }, [stock, win])
 
   useEffect(() => {
     let alive = true
@@ -1364,19 +1388,30 @@ function ProfileSection() {
         <button className={mode === 'idx' ? 'on' : ''} onClick={() => switchMode('idx')}>📈 지수</button>
         <button className={mode === 'stk' ? 'on' : ''} onClick={() => switchMode('stk')}>🏢 개별종목</button>
       </div>
+      {mode === 'stk' && (
+        <div className="vp-search">
+          <input value={q} onChange={(e) => setQ(e.target.value)}
+            placeholder={`종목명 또는 코드 검색 (${stocks.length.toLocaleString()}종목)`} />
+          {q && <button className="vp-clear" onClick={() => setQ('')} aria-label="검색어 지우기">✕</button>}
+        </div>
+      )}
       <div className="seg">
         {options.map((c) => (
           <button key={c.code} className={code === c.code ? 'on' : ''} onClick={() => setCode(c.code)}>
             {c.name}
           </button>
         ))}
+        {mode === 'stk' && !options.length && <span className="vp-none">검색 결과가 없어요</span>}
       </div>
       <div className="seg">
-        {VP_WINS.map((w) => (
+        {wins.map((w) => (
           <button key={w.days} className={win === w.days ? 'on' : ''} onClick={() => setWin(w.days)}>
             {w.label}
           </button>
         ))}
+        {mode === 'stk' && stock && stock.hist_days < 1825 && (
+          <span className="vp-none">시총 상위 200종목만 5년·3년까지 봅니다</span>
+        )}
       </div>
       {state === 'loading' && <div className="col-msg">불러오는 중…</div>}
       {state === 'error' && <div className="col-msg">데이터를 불러오지 못했어요</div>}

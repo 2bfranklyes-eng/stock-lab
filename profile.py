@@ -178,22 +178,28 @@ def draw(key, name, df, px, results):
     print(f"  저장: profile_{key}.png")
 
 
-def analyze(df, V, px, w):
+def analyze(df, V, px, w, max_bins=90, quiet=False):
     """구간별로 프로파일을 계산하고 콘솔 요약까지. → [(label, days, edges, rem)]"""
     results, thin5, df5 = [], None, None
     w = np.asarray(w)
+    span = (df.index[-1] - df.index[0]).days
     for label, days in WINDOWS:
+        # 보유 히스토리가 창을 못 채우면 건너뛴다 — 2년치뿐인 종목의 '5년'은 2년 그림이
+        # 5년인 척하는 것이라, 아래 창과 똑같은 그래프가 이름만 바꿔 걸리게 된다.
+        if days > span * 1.25:
+            continue
         mask = np.asarray(df.index >= df.index[-1] - pd.Timedelta(days=days))
         sub = df[mask]
         if len(sub) < 15:
             continue
-        nbins = min(90, max(15, len(sub) // 3))   # 짧은 구간은 구간 수도 줄여 과분해 방지
+        nbins = min(max_bins, max(15, len(sub) // 3))   # 짧은 구간은 구간 수도 줄여 과분해 방지
         edges, rem, thin = build(sub, nbins, V[mask], w[mask])
-        window_summary(label, edges, rem, px)
+        if not quiet:
+            window_summary(label, edges, rem, px)
         results.append((label, days, edges, rem))
-        if label == "5년":
-            thin5, df5 = thin, sub
-    if df5 is not None:
+        if df5 is None:                           # WINDOWS는 긴 창부터라 첫 성공분 = 최장 보유 구간
+            thin5, df5 = thin, sub                # 가설 검증은 이걸로 한다
+    if df5 is not None and not quiet:
         hypothesis_check(df5, thin5)
     return results
 
@@ -274,15 +280,20 @@ def split_adjust(df):
     return factor, events
 
 
-def run_stock(code, name, push_rows):
+def run_stock(code, name, push_rows, quiet=False):
     rows = page("stock_daily", "dt,high,low,close,tval,shares,mktcap", code=code)
     if len(rows) < 60:
-        print(f"\n=== {name}({code}) — 데이터 {len(rows)}행뿐, 건너뜀 ===")
+        if not quiet:
+            print(f"\n=== {name}({code}) — 데이터 {len(rows)}행뿐, 건너뜀 ===")
         return
     df = pd.DataFrame(rows)
     df["dt"] = pd.to_datetime(df["dt"])
     df = df.set_index("dt").astype(float)
     df = df[(df["close"] > 0) & (df["high"] > 0) & (df["mktcap"] > 0)]
+    if len(df) < 60:                          # 장기 거래정지 등으로 유효일이 거의 없는 종목
+        if not quiet:
+            print(f"\n=== {name}({code}) — 유효 거래일 {len(df)}일뿐, 건너뜀 ===")
+        return
     f, events = split_adjust(df)
     for c in ("high", "low", "close"):        # 분할 보정된 가격으로 프로파일을 그린다
         df[c] = df[c] * f
@@ -290,49 +301,82 @@ def run_stock(code, name, push_rows):
     V = np.clip(df["tval"] / df["mktcap"], 0, 0.5).to_numpy()   # 진짜 회전율
     px = float(df["Close"].iloc[-1])
     last_dt = df.index[-1].strftime("%Y-%m-%d")
-    print(f"\n=== {name}({code}) — 현재가 {px:,.0f} ({last_dt}) · 회전율 중앙값 {np.median(V)*100:.2f}%/일 ===")
-    for e in events:                          # 헤더 뒤에 찍어야 어느 종목 것인지 헷갈리지 않는다
-        print(f"  (주가 보정: {e})")
-    results = analyze(df, V, px, qty(df))
+    if not quiet:
+        print(f"\n=== {name}({code}) — 현재가 {px:,.0f} ({last_dt}) "
+              f"· 회전율 중앙값 {np.median(V)*100:.2f}%/일 ===")
+        for e in events:                      # 헤더 뒤에 찍어야 어느 종목 것인지 헷갈리지 않는다
+            print(f"  (주가 보정: {e})")
+    # 종목은 60구간 — 대시보드 막대 60개면 해상도가 충분하고, 1,700종목이면 저장량이 1.5배 차이난다
+    results = analyze(df, V, px, qty(df), max_bins=60, quiet=quiet)
     push_rows += to_rows(code, results, px, last_dt)
 
 
 def stock_list():
-    """워치리스트 — krx.py와 같은 기준(stock_meta 시총 상위 N + 지정 종목)."""
-    import os
-    n = int(os.environ.get("VP_STOCK_N", "30"))
-    always = [c.strip() for c in os.environ.get("SCREENER_ALWAYS", "").split(",") if c.strip()]
-    rows = client().table("stock_meta").select("code,name,marcap") \
-                   .order("marcap", desc=True).limit(n).execute().data or []
-    have = {r["code"] for r in rows}
-    if [c for c in always if c not in have]:
-        rows += client().table("stock_meta").select("code,name") \
-                        .in_("code", [c for c in always if c not in have]).execute().data or []
+    """대상 종목 — krx.py가 갱신한 vp_stocks가 단일 출처(웹 검색 목록과 같은 표)."""
+    rows, start = [], 0
+    while True:
+        r = client().table("vp_stocks").select("code,name") \
+                    .order("marcap", desc=True).range(start, start + 999).execute().data or []
+        rows += r
+        if len(r) < 1000:
+            break
+        start += 1000
     return [(r["code"], r["name"]) for r in rows]
 
 
 def push(rows, codes):
+    """해당 코드들의 기존 행을 지우고 새로 넣는다 — 구간 경계가 매일 달라져 upsert로는 잔재가 남는다."""
     sb = client()
-    for c in codes:                          # 전량 교체(구간 경계가 매일 달라져 upsert로는 잔재가 남음)
-        sb.table("volume_profile").delete().eq("code", c).execute()
+    for i in range(0, len(codes), 100):      # 코드별 delete는 종목이 많아지면 요청 수가 폭발한다
+        sb.table("volume_profile").delete().in_("code", codes[i:i + 100]).execute()
     for i in range(0, len(rows), 1000):
         sb.table("volume_profile").insert(rows[i:i + 1000]).execute()
-    print(f"\nvolume_profile 적재 완료: {len(rows)}행 / {len(codes)}종목")
 
 
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if "--skip" in sys.argv:                  # --skip 뒤의 숫자는 종목코드가 아니다
+        args = [a for a in args if a != sys.argv[sys.argv.index("--skip") + 1]]
     if "--stocks" in sys.argv:                # 개별종목 (항상 Supabase 적재 — 로컬 PNG 없음)
-        if args:                              # 지정 실행도 이름은 stock_meta에서 찾아 표시
-            got = {r["code"]: r["name"] for r in client().table("stock_meta")
+        if args:                              # 지정 실행도 이름은 vp_stocks에서 찾아 표시
+            got = {r["code"]: r["name"] for r in client().table("vp_stocks")
                    .select("code,name").in_("code", args).execute().data or []}
             targets = [(c, got.get(c, c)) for c in args]
         else:
             targets = stock_list()
-        rows = []
-        for code, name in targets:
-            run_stock(code, name, rows)
-        push(rows, [c for c, _ in targets])
+        if "--skip" in sys.argv:              # 중단된 대량 실행 이어받기 (로그의 진행 수를 넣는다)
+            targets = targets[int(sys.argv[sys.argv.index("--skip") + 1]):]
+        # 50종목 단위로 계산→적재를 끝낸다. 전량을 메모리에 쌓으면 1,700종목에선 수십만 행이
+        # 한꺼번에 올라가고, 중간에 죽으면 그날 작업이 통째로 날아간다.
+        bulk, total, failed, skipped = len(targets) > 20, 0, [], []
+        for i in range(0, len(targets), 50):
+            chunk = targets[i:i + 50]
+            rows = []
+            for code, name in chunk:
+                before = len(rows)
+                try:
+                    run_stock(code, name, rows, quiet=bulk)
+                except Exception as e:        # 한 종목의 이상 데이터가 전체 실행을 죽이지 않게
+                    failed.append(f"{name}({code}): {type(e).__name__}")
+                    if not bulk:
+                        raise
+                if len(rows) == before:
+                    skipped.append(code)      # 거래정지·신규상장 등 — 아래에서 검색 목록에서 뺀다
+            push(rows, [c for c, _ in chunk])
+            total += len(rows)
+            if bulk:
+                print(f"  {min(i + 50, len(targets)):>5}/{len(targets)} 종목 · 누적 {total:,}행", flush=True)
+        print(f"\nvolume_profile 적재 완료: {total:,}행 / {len(targets)}종목")
+        if failed:
+            print(f"  실패 {len(failed)}종목: {', '.join(failed[:10])}"
+                  f"{' …' if len(failed) > 10 else ''}")
+        if skipped and not args:
+            # 매물대가 안 나온 종목(거래정지=고저가 0, 신규상장 등)은 검색 목록에서 뺀다.
+            # 안 그러면 검색은 되는데 '데이터 준비 중'만 뜨는 종목이 남는다.
+            # krx.py가 내일 다시 넣고 여기서 다시 빠지므로 상태는 알아서 맞춰진다.
+            for i in range(0, len(skipped), 100):
+                client().table("vp_stocks").delete().in_("code", skipped[i:i + 100]).execute()
+            print(f"  검색 목록에서 제외 {len(skipped)}종목 (거래정지·상장 직후 등)")
         sys.exit()
     do_push = "--push" in sys.argv
     keys = [a.lower() for a in args] or (list(PRESETS) if do_push else ["kospi"])
@@ -341,3 +385,4 @@ if __name__ == "__main__":
         run(k, rows)
     if do_push:
         push(rows, keys)
+        print(f"\nvolume_profile 적재 완료: {len(rows):,}행 / {len(keys)}종목")

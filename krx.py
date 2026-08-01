@@ -30,11 +30,15 @@ TARGETS = {
     "kr_turn_kospi":  ("idx/kospi_dd_trd", "코스피", "sto/stk_bydd_trd", "코스피 회전율(거래대금/시총)"),
     "kr_turn_kosdaq": ("idx/kosdaq_dd_trd", "코스닥", "sto/ksq_bydd_trd", "코스닥 회전율(거래대금/시총)"),
 }
-# 개별종목 매물대용 워치리스트 — stock_meta 시총 상위 N + SCREENER_ALWAYS(보유 종목).
-# API는 '하루치 전 종목'을 한 번에 주므로 종목 수를 늘려도 호출 수는 그대로다(저장량만 늘어남).
-WATCH_N = int(os.environ.get("VP_STOCK_N", "30"))
-ALWAYS = [c.strip() for c in os.environ.get("SCREENER_ALWAYS", "").split(",") if c.strip()]
+# 개별종목 매물대 대상 — 시총 상위 비율로 자른다(코스피 50% / 코스닥 70%).
+# API는 '하루치 전 종목'을 한 번에 주므로 종목 수를 늘려도 호출 수는 그대로고 저장량만 늘어난다.
+# 그래서 히스토리를 차등한다: 상위 DEEP_N은 5년, 나머지는 2년. 무료 티어 용량 방어.
 MKT_PATH = {"KOSPI": "sto/stk_bydd_trd", "KOSDAQ": "sto/ksq_bydd_trd"}
+MKT_PCT = {"KOSPI": float(os.environ.get("VP_PCT_KOSPI", "0.5")),
+           "KOSDAQ": float(os.environ.get("VP_PCT_KOSDAQ", "0.7"))}
+DEEP_N = int(os.environ.get("VP_DEEP_N", "200"))     # 5년치를 보관할 시총 상위 종목 수
+DEEP_DAYS, SHALLOW_DAYS = 1825, 730
+ALWAYS = [c.strip() for c in os.environ.get("SCREENER_ALWAYS", "").split(",") if c.strip()]
 # 종목 스캔과 같은 날짜 루프에서 지수 OHLC도 받아 stock_daily에 함께 적재한다.
 # 야후 ^KS11은 하루 늦고 거래'량'만 주는데, KRX는 당일 고저가 + 거래'대금' + 시총을 준다
 # → 매물대 가중치가 저가주 왜곡 없는 거래대금이 되고, 회전율 분모까지 같은 소스로 맞춰진다.
@@ -124,16 +128,29 @@ def run(force_start=None):
         {"source": "krx", "market": "KR", "rows": total, "status": "ok"}).execute()
 
 
-def watchlist():
-    """{code: market} — 시총 상위 N + 지정 종목. stock_meta가 비었으면 빈 dict."""
-    rows = sb.table("stock_meta").select("code,name,market,marcap") \
-             .order("marcap", desc=True).limit(WATCH_N).execute().data or []
-    have = {r["code"] for r in rows}
-    if ALWAYS:
-        extra = sb.table("stock_meta").select("code,name,market") \
-                  .in_("code", [c for c in ALWAYS if c not in have]).execute().data or []
-        rows += extra
-    return {r["code"]: r["market"] for r in rows if r["market"] in MKT_PATH}
+def watchlist(bas_dd):
+    """대상 종목을 KRX 일별매매정보(그 날 전 종목)에서 직접 만든다 → vp_stocks에 저장.
+    stock_meta(스크리너용 500종목)에 매이지 않으므로 코스닥 소형주까지 커버된다.
+    → {code: (market, hist_days)}"""
+    uni = []
+    for mkt, path in MKT_PATH.items():
+        rows = [x for x in get(path, bas_dd) if num(x.get("MKTCAP"))]
+        rows.sort(key=lambda x: -num(x["MKTCAP"]))
+        keep = rows[:int(len(rows) * MKT_PCT[mkt])]
+        pinned = [x for x in rows if x["ISU_CD"] in ALWAYS and x not in keep]
+        uni += [(x["ISU_CD"], x["ISU_NM"], mkt, num(x["MKTCAP"])) for x in keep + pinned]
+        print(f"  [{mkt}] 전체 {len(rows)} → 상위 {MKT_PCT[mkt]*100:.0f}% {len(keep)}종목"
+              f"{f' + 지정 {len(pinned)}' if pinned else ''}")
+    uni.sort(key=lambda x: -x[3])                    # 시총 내림차순 → 앞의 DEEP_N개만 5년 보관
+    out, recs = {}, []
+    for i, (code, name, mkt, cap) in enumerate(uni):
+        hist = DEEP_DAYS if i < DEEP_N else SHALLOW_DAYS
+        out[code] = (mkt, hist)
+        recs.append({"code": code, "name": name, "market": mkt, "marcap": cap, "hist_days": hist})
+    for i in range(0, len(recs), 500):
+        sb.table("vp_stocks").upsert(recs[i:i + 500], on_conflict="code").execute()
+    print(f"  vp_stocks 갱신: {len(recs)}종목 (5년 {min(DEEP_N, len(recs))} / 2년 {max(0, len(recs)-DEEP_N)})")
+    return out
 
 
 def num(v):
@@ -149,13 +166,13 @@ def run_stocks(force_start=None):
     """워치리스트 종목의 일별 시세(거래대금·시총·상장주식수)를 stock_daily에 적재.
     스캔은 '날짜 단위'(한 콜에 그 날 전 종목) — 워치리스트가 바뀌어 과거가 빈 종목이 생기면
     `python krx.py --stocks 20210801` 로 전체 재스캔해야 메워진다."""
-    codes = watchlist()
-    if not codes:
-        print("[KR] stock_meta 비어 있음 — 종목은 건너뛰고 지수 OHLC만 수집")
-    paths = sorted({MKT_PATH[m] for m in codes.values()})
+    today = date.today()
     r = sb.table("stock_daily").select("dt").order("dt", desc=True).limit(1).execute().data
     start = force_start or (date.fromisoformat(r[0]["dt"]) + timedelta(days=1) if r else BACKFILL_START)
-    today = date.today()
+    codes = watchlist((today - timedelta(days=1)).strftime("%Y%m%d") if today.weekday() < 5
+                      else (today - timedelta(days=today.weekday() - 4)).strftime("%Y%m%d"))
+    paths = sorted({MKT_PATH[m] for m, _h in codes.values()})
+    shallow_from = today - timedelta(days=SHALLOW_DAYS)   # 2년 티어는 이 날짜부터만 저장
     print(f"[KR] 종목 {len(codes)}개 + 지수 {len(IDX_TARGETS)}종 · {start}~{today} "
           f"· 하루 {len(paths) + len(IDX_TARGETS)}콜")
 
@@ -165,8 +182,9 @@ def run_stocks(force_start=None):
             bas = d.strftime("%Y%m%d")
             for p in paths:
                 for x in get(p, bas):
-                    if x["ISU_CD"] not in codes:
-                        continue
+                    tier = codes.get(x["ISU_CD"])
+                    if not tier or (tier[1] == SHALLOW_DAYS and d < shallow_from):
+                        continue           # 대상 아님 / 얕은 티어의 오래된 날짜
                     recs.append({"code": x["ISU_CD"], "dt": d.isoformat(),
                                  "open": num(x["TDD_OPNPRC"]), "high": num(x["TDD_HGPRC"]),
                                  "low": num(x["TDD_LWPRC"]), "close": num(x["TDD_CLSPRC"]),
@@ -186,16 +204,22 @@ def run_stocks(force_start=None):
                     break
                 calls += 1
                 time.sleep(0.15)
-            if len(recs) >= 600:
+            if len(recs) >= 2000:
                 sb.table("stock_daily").upsert(recs, on_conflict="code,dt").execute()
                 saved += len(recs)
-                print(f"  [KR] 종목: ~{recs[-1]['dt']} 누적 {saved}행", flush=True)
+                print(f"  [KR] 종목: ~{recs[-1]['dt']} 누적 {saved:,}행", flush=True)
                 recs = []
         d += timedelta(days=1)
     if recs:
         sb.table("stock_daily").upsert(recs, on_conflict="code,dt").execute()
         saved += len(recs)
     print(f"[KR] 개별종목: 조회 {calls}콜 → {saved}행 적재")
+    # 2년 티어의 창을 벗어난 옛 행을 지운다. 안 지우면 매일 하루씩만 쌓여 1,545종목의
+    # 히스토리가 해마다 1년씩 길어지고(=티어를 둔 의미가 사라지고) 용량이 계속 늘어난다.
+    shallow = [c for c, (_m, h) in codes.items() if h == SHALLOW_DAYS]
+    for i in range(0, len(shallow), 100):
+        sb.table("stock_daily").delete().in_("code", shallow[i:i + 100]) \
+          .lt("dt", shallow_from.isoformat()).execute()
     sb.table("ingest_log").insert(
         {"source": "krx_stock", "market": "KR", "rows": saved, "status": "ok"}).execute()
 
