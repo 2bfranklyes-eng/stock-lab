@@ -3,14 +3,18 @@
 header h1 { font-size: 22px; margin: 8px 0 6px; }
 .lead { font-size: 13.5px; color: #475569; line-height: 1.75; margin: 0 0 22px; }
 
-/* ── 상단 탭 (시장심리 / 유동성 / 물가 섹션 전환) ── */
-.topnav { position: sticky; top: 0; z-index: 20; display: flex; gap: 6px;
-  padding: 12px 0 14px; margin-bottom: 8px; background: #f4f6f9; }
+/* ── 상단 내비: 위 줄 = 묶음(시장 배경/지수·종목/내 투자), 아래 줄 = 묶음 안 탭 ── */
+.topnav { position: sticky; top: 0; z-index: 20; display: flex; flex-direction: column;
+  gap: 8px; padding: 12px 0 12px; margin-bottom: 8px; background: #f4f6f9; }
+.nav-groups, .nav-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
 .topnav button { font: inherit; font-size: 14px; font-weight: 600; padding: 8px 18px;
   border-radius: 999px; border: 1px solid var(--line); background: var(--card);
   color: #64748b; cursor: pointer; transition: background .15s, color .15s; }
 .topnav button:hover { border-color: #cbd5e1; }
 .topnav button.on { background: #d97706; border-color: #d97706; color: #fff; }
+/* 탭 줄은 묶음 줄보다 한 단계 작게 — 위계가 보여야 두 줄이 헷갈리지 않는다 */
+.nav-tabs button { font-size: 12.5px; padding: 5px 13px; }
+.nav-tabs button.on { background: #b45309; border-color: #b45309; }
 
 /* ── 2단 분할 (US | KR) ── */
 .cols { display: flex; gap: 24px; align-items: flex-start; }
@@ -150,6 +154,7 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 @media (prefers-color-scheme: dark) {
   :root { --card: #1e293b; --line: #334155; --track: #0f172a; }
   .topnav { background: #0f172a; }
+  .nav-tabs button.on { background: #d97706; border-color: #d97706; }
   .card h2 { color: #e2e8f0; }
   .lead, .col-date, .gauge-note, .note, .cap, .glossary dd, .setup p { color: #94a3b8; }
   .method li { color: #cbd5e1; }

@@ -245,19 +245,27 @@ const RANGES = [
   { label: '전체', days: Infinity },
 ]
 
-// 상단 탭: 시장 배경요인 섹션 전환. key = 렌더할 섹션.
-const TABS = [
-  { key: 'sent', label: '시장심리', emoji: '😨' },
-  { key: 'liq', label: '유동성', emoji: '💧' },
-  { key: 'inf', label: '물가', emoji: '🔥' },
-  { key: 'fuel', label: '실탄', emoji: '💰' },
-  { key: 'mix', label: '종합', emoji: '🧭' },
-  { key: 'cmp', label: '비교', emoji: '📊' },
-  { key: 'vp', label: '매물대', emoji: '⛰️' },
-  { key: 'ai', label: 'AI 사이클', emoji: '🤖' },
-  { key: 'scr', label: '종목', emoji: '🔎' },
-  { key: 'pf', label: '포트폴리오', emoji: '🧺' },
+// 상단 내비: 투자 의사결정 순서대로 3묶음 — "투자할 때인가 → 무엇을 살까 → 내 건 어떤가".
+// 위 줄 = 묶음, 아래 줄 = 묶음 안의 탭. key = 렌더할 섹션.
+const TAB_GROUPS = [
+  { key: 'macro', label: '시장 배경', emoji: '🌍', tabs: [
+    { key: 'sent', label: '시장심리', emoji: '😨' },
+    { key: 'liq', label: '유동성', emoji: '💧' },
+    { key: 'inf', label: '물가', emoji: '🔥' },
+    { key: 'fuel', label: '실탄', emoji: '💰' },
+    { key: 'mix', label: '종합', emoji: '🧭' },
+    { key: 'cmp', label: '비교', emoji: '📊' },   // 배경 지수를 주가에 겹쳐 검증하는 뷰라 여기
+  ] },
+  { key: 'asset', label: '지수·종목', emoji: '📊', tabs: [
+    { key: 'vp', label: '매물대', emoji: '⛰️' },
+    { key: 'ai', label: 'AI 사이클', emoji: '🤖' },
+    { key: 'scr', label: '종목', emoji: '🔎' },
+  ] },
+  { key: 'mine', label: '내 투자', emoji: '🧺', tabs: [
+    { key: 'pf', label: '포트폴리오', emoji: '🧺' },
+  ] },
 ]
+const groupOf = (tab) => TAB_GROUPS.find((g) => g.tabs.some((t) => t.key === tab))
 
 // ── 개별 종목 (스크리너 · 포트폴리오 공용) ──
 // ⚠️ 무료 데이터의 한계상 '검증된 전략'을 만들 수 없다 — 생존편향(현재 상장 종목만),
@@ -331,15 +339,36 @@ const MIX_HORIZONS = [20, 60, 120]
 
 export default function App() {
   const [tab, setTab] = useState('sent')
+  const lastTab = useRef({})                 // 묶음별 마지막 탭 — 묶음을 오가도 보던 곳으로 복귀
   if (!hasKey) return <Setup />
+  const group = groupOf(tab)
+  function pickGroup(g) {
+    if (g.key === group.key) return
+    setTab(lastTab.current[g.key] || g.tabs[0].key)
+  }
+  function pickTab(k) {
+    lastTab.current[group.key] = k
+    setTab(k)
+  }
   return (
     <div className="wrap">
       <nav className="topnav">
-        {TABS.map((t) => (
-          <button key={t.key} className={tab === t.key ? 'on' : ''} onClick={() => setTab(t.key)}>
-            {t.emoji} {t.label}
-          </button>
-        ))}
+        <div className="nav-groups">
+          {TAB_GROUPS.map((g) => (
+            <button key={g.key} className={group.key === g.key ? 'on' : ''} onClick={() => pickGroup(g)}>
+              {g.emoji} {g.label}
+            </button>
+          ))}
+        </div>
+        {group.tabs.length > 1 && (
+          <div className="nav-tabs">
+            {group.tabs.map((t) => (
+              <button key={t.key} className={tab === t.key ? 'on' : ''} onClick={() => pickTab(t.key)}>
+                {t.emoji} {t.label}
+              </button>
+            ))}
+          </div>
+        )}
       </nav>
       {tab === 'sent' && <SentimentSection />}
       {tab === 'liq' && <LiquiditySection />}
