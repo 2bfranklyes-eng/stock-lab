@@ -105,7 +105,10 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
    right:0 이 무시되고 100px짜리로 쪼그라든다. */
 .vp-overlay { position: absolute; left: 64px; top: 0; width: calc(100% - 64px); height: 100%;
   pointer-events: none; overflow: visible; }
-.vp-chart-cap { font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px; }
+.vp-chart-cap { display: flex; justify-content: flex-end; gap: 14px; flex-wrap: wrap;
+  font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px; }
+.vp-ref-cap { color: #008300; font-weight: 600; }
+.vp-ref-cap i { font-style: normal; letter-spacing: -1px; }
 .vp-row { display: flex; align-items: center; gap: 8px; height: 9px; cursor: crosshair; }
 .vp-row.on .vp-bar { outline: 1px solid #d97706; opacity: 1; }
 .vp-row.on .vp-price { color: #d97706; font-weight: 700; }

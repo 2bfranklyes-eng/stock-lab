@@ -1441,6 +1441,12 @@ const qtyFmt = (v) => {
 // 상장주식수가 급변한 날 주가가 그 역수만큼 움직였으면(=시총 연속) 분할류로 보고
 // 이전 구간 가격에 배율을 적용한다. 유상증자는 시총이 함께 늘어 주가가 안 꺾이므로 안 걸린다.
 // 이걸 안 하면 분할 종목(예: LS ELECTRIC 1:5)의 주가선이 매물대와 어긋나 보인다.
+//
+// 보정과 함께 '매물대 평균선'(G&H 참조가격)도 계산한다: 잔존 물량의 가중평균 매입가.
+//   매일  잔존총량 M ← (1-회전율)·M + 그날 수량 q
+//         가중합  S ← (1-회전율)·S + q × 그날 대표가
+//   평균선 R = S ÷ M   — 매물대 막대(비례 소진 모델)와 정확히 같은 가정이라 서로 들어맞는다.
+// 주가가 R 위면 평균 보유자가 이익권(매물 압력 완화), 아래면 물려 있는 상태.
 function splitAdjust(rows) {
   const f = rows.map(() => 1)
   for (let i = 1; i < rows.length; i++) {
@@ -1452,7 +1458,21 @@ function splitAdjust(rows) {
       for (let j = 0; j < i; j++) f[j] /= r
     }
   }
-  return rows.map((r, i) => ({ dt: r.dt, close: r.close * f[i] }))
+  let M = 0, S = 0
+  return rows.map((r, i) => {
+    let ref = null
+    if (r.tval > 0 && r.mktcap > 0 && r.high > 0) {
+      const V = Math.min(r.tval / r.mktcap, 0.5)           // 회전율 (profile.py와 같은 클립)
+      const typ = ((r.high + r.low + r.close) / 3) * f[i]  // 보정된 대표가
+      const q = r.tval / typ                               // 그날 손바뀐 수량(보정 단위)
+      M = (1 - V) * M + q
+      S = (1 - V) * S + q * typ
+      ref = M > 0 ? S / M : null
+    } else if (M > 0) {
+      ref = S / M                                          // 거래정지일 — 평균선 유지
+    }
+    return { dt: r.dt, close: r.close * f[i], ref }
+  })
 }
 
 // 매물대와 같은 구간의 일별 종가. 한국(지수·종목)은 stock_daily가 원자료고,
@@ -1462,13 +1482,15 @@ const VP_US_PRICE = { spx: 'us_index', nasdaq: 'us_nasdaq', dow: 'us_dow' }
 async function fetchPrices(code, win, lastDt) {
   const from = new Date(new Date(lastDt).getTime() - win * 86400000).toISOString().slice(0, 10)
   if (VP_US_PRICE[code]) {
+    // 미국 지수는 price_daily에 종가뿐이라 평균선(거래대금·시총 필요)은 못 그린다
     const { data } = await supabase.from('price_daily').select('dt,close')
       .eq('market', 'US').eq('code', VP_US_PRICE[code]).gte('dt', from).order('dt')
-    return (data || []).map((r) => ({ dt: r.dt, close: r.close }))
+    return (data || []).map((r) => ({ dt: r.dt, close: r.close, ref: null }))
   }
   let all = []                                   // 5년 창은 1,000행을 넘어 페이지네이션이 필요
   for (let f = 0; f < 3000; f += 1000) {
-    const { data } = await supabase.from('stock_daily').select('dt,close,shares')
+    const { data } = await supabase.from('stock_daily')
+      .select('dt,close,shares,high,low,tval,mktcap')
       .eq('code', code).gte('dt', from).order('dt').range(f, f + 999)
     if (!data || !data.length) break
     all = all.concat(data)
@@ -1485,10 +1507,18 @@ function PriceLine({ series, lo, hi, height }) {
   if (!series.length || hi <= lo) return null
   const y = (p) => ((hi - p) / (hi - lo)) * height
   const n = Math.max(1, series.length - 1)
-  const d = series.map((s, i) => `${i ? 'L' : 'M'}${(i / n) * 100},${y(s.close).toFixed(2)}`).join(' ')
+  const path = (get) => series.map((s, i) => {
+    const v = get(s)
+    return v == null ? '' : `${i && get(series[i - 1]) != null ? 'L' : 'M'}${(i / n) * 100},${y(v).toFixed(2)}`
+  }).filter(Boolean).join(' ')
+  const d = path((s) => s.close)
+  const dr = path((s) => s.ref)
   return (
     <svg className="vp-overlay" viewBox={`0 0 100 ${height}`} preserveAspectRatio="none"
       aria-label="주가 추이">
+      {/* 매물대 평균선(보유자 평단 추정) — 주가선 밑에 깔아 주가가 우선 읽히게 */}
+      {dr && <path d={dr} fill="none" stroke="#008300" strokeWidth="1.3" strokeDasharray="5 3"
+        opacity=".85" vectorEffect="non-scaling-stroke" />}
       {/* 흰 테두리를 밑에 깔아 빨간·파란 막대 위에서도 선이 끊겨 보이지 않게 */}
       <path d={d} fill="none" stroke="var(--card)" strokeWidth="3" vectorEffect="non-scaling-stroke" />
       <path d={d} fill="none" stroke="#1f2937" strokeWidth="1.4" vectorEffect="non-scaling-stroke" />
@@ -1516,6 +1546,7 @@ function ProfileBody({ rows, series }) {
   // rows는 고가→저가 순 — 막대 영역의 위·아래 끝이 곧 주가 차트의 y 범위가 된다
   const hiEdge = rows[0].bin_hi
   const loEdge = rows[rows.length - 1].bin_lo
+  const lastRef = series.length ? series[series.length - 1].ref : null
   // 차트 높이는 막대 목록을 실측해 맞춘다. 막대 높이가 CSS(모바일 12px/데스크톱 9px)로
   // 달라지므로 상수로 계산하면 화면 폭에 따라 두 축이 어긋난다.
   const barsRef = useRef(null)
@@ -1585,7 +1616,16 @@ function ProfileBody({ rows, series }) {
             </div>
           </div>
           {series.length > 1 && (
-            <div className="vp-chart-cap">{series[0].dt} ~ {series[series.length - 1].dt}</div>
+            <div className="vp-chart-cap">
+              {lastRef != null && (
+                <span className="vp-ref-cap">
+                  <i>┄</i> 매물대 평균 {fmt(lastRef)}
+                  ({px >= lastRef ? '현재가가 평단 위 +' : '현재가가 평단 아래 '}
+                  {(px / lastRef * 100 - 100).toFixed(1)}%)
+                </span>
+              )}
+              {series[0].dt} ~ {series[series.length - 1].dt}
+            </div>
           )}
         </div>
         {hover != null && (
@@ -1600,7 +1640,10 @@ function ProfileBody({ rows, series }) {
         )}
         <p className="note">
           <b>주가선이 매물대 위에 겹쳐 있습니다</b> — 같은 가격 축이라, 선이 오래 머문 높이일수록
-          그 자리의 막대가 깁니다(매물이 쌓인 자리). 선이 빠르게 스쳐간 곳은 막대가 짧아요.{' '}
+          그 자리의 막대가 깁니다(매물이 쌓인 자리). 선이 빠르게 스쳐간 곳은 막대가 짧아요.
+          <b style={{ color: '#008300' }}> 초록 점선 = 매물대 평균선</b>(잔존 물량의 가중평균 매입가
+          = 보유자 평단 추정). 주가가 이 선 <b>위면 평균 보유자가 이익권</b>이라 매물 압력이 덜하고,
+          아래면 물려 있는 상태예요.{' '}
           <b style={{ color: '#c0392b' }}>빨강</b> = 현재가 위(반등 시 본전 매도 압력) ·{' '}
           <b style={{ color: '#2471a3' }}>파랑</b> = 아래(하락 시 받치는 손바뀜 물량) ·
           막대 길이 = 잔존 물량(최대=1). 막대가 짧은 곳은 <b>진공 구간</b> — 가격이 빠르게 지나가기 쉬워요.
