@@ -72,6 +72,8 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   border-radius: 12px; padding: 10px 12px; text-align: center; }
 .rf-label { display: block; font-size: 11px; color: #94a3b8; margin-bottom: 3px; }
 .rf-val { display: block; font-size: 18px; font-weight: 700; color: #334155; }
+/* 지표 정의 한 줄 — 숫자만 있으면 '무슨 뜻이지'로 되돌아오게 된다 */
+.rf-sub { display: block; font-size: 10px; color: #94a3b8; line-height: 1.5; margin-top: 5px; }
 
 .method ul { margin: 6px 0 0; padding-left: 20px; }
 .method li { font-size: 13px; line-height: 1.95; color: #334155; }

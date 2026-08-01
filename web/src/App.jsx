@@ -1549,12 +1549,15 @@ function ProfileBody({ rows, series }) {
       {daily > 0 && (
         <div className="raw-figs">
           <div className="raw-fig"><span className="rf-label">위쪽 매물 전량 소화에 필요한 거래일</span>
-            <span className="rf-val">{above.length ? `${(upQty / daily).toFixed(1)}일치` : '—'}</span></div>
+            <span className="rf-val">{above.length ? `${(upQty / daily).toFixed(1)}일치` : '—'}</span>
+            <span className="rf-sub">현재가 위 매물 ÷ 하루 평균 거래량. 평소 속도로 다 소화하는 데 걸리는 날</span></div>
           <div className="raw-fig"><span className="rf-label">하루 평균 거래량 (20일)</span>
-            <span className="rf-val">{qtyFmt(daily)}</span></div>
+            <span className="rf-val">{qtyFmt(daily)}</span>
+            <span className="rf-sub">소화 속도의 기준값</span></div>
           <div className="raw-fig"><span className="rf-label">최근일 거래량 배율</span>
             <span className="rf-val" style={{ color: vratio >= 1.5 ? '#c0392b' : undefined }}>
-              {vratio == null ? '—' : `${vratio.toFixed(2)}배`}</span></div>
+              {vratio == null ? '—' : `${vratio.toFixed(2)}배`}</span>
+            <span className="rf-sub">최근 거래일 ÷ 20일 평균 — 1보다 크면 매물 소화가 평소보다 빠른 중</span></div>
         </div>
       )}
       <section className="card">
@@ -1622,6 +1625,10 @@ function ProfileMethod() {
         <li><b>소화 일수</b> — 쌓인 물량 ÷ 하루 평균 거래량. "이 구간을 지나가려면 며칠치 거래가
           필요한가"입니다. 짧을수록 빨리 통과하지만, <b>어느 방향으로 갈지는 말해주지 않습니다</b> —
           거래가 매수로 터질지 매도로 터질지는 매물대 밖의 일이에요.</li>
+        <li><b>거래량 배율</b> — 최근 거래일 거래량 ÷ 20일 평균. 소화 일수가 <b>평소 속도로 며칠</b>인
+          반면, 이건 <b>지금 속도가 평소의 몇 배인가</b>입니다. 2배면 소화 일수를 절반으로 나눠 읽으면
+          돼요. 매물대는 고정된 벽이 아니라 마찰이라, 거래가 몰릴 땐 같은 벽도 빨리 뚫립니다.
+          <b>1 아래로 식으면</b> 그때 서 있는 가격대의 소화 일수가 그 자리 체류 예상치가 됩니다.</li>
       </ul>
       <p className="note">⚠️ <b>한계</b>: 지수는 개별 종목의 합성이라 매물대가 개별주보다 흐릿하고,
         회전율도 유통주식수 대신 <b>직전 1년 거래량 합 대비</b>로 근사합니다(한국 지수는 KRX 실제 회전율 사용) ·
