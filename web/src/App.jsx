@@ -266,6 +266,45 @@ const TAB_GROUPS = [
   ] },
 ]
 const groupOf = (tab) => TAB_GROUPS.find((g) => g.tabs.some((t) => t.key === tab))
+const ALL_TABS = TAB_GROUPS.flatMap((g) => g.tabs)
+
+// 탭 key → 섹션. 단일 뷰와 3분할 뷰가 같은 매핑을 쓴다.
+function renderSection(key) {
+  switch (key) {
+    case 'sent': return <SentimentSection />
+    case 'liq': return <LiquiditySection />
+    case 'inf': return <InflationSection />
+    case 'fuel': return <FuelSection />
+    case 'mix': return <CompositeSection />
+    case 'cmp': return <ComparisonSection />
+    case 'vp': return <ProfileSection />
+    case 'ai': return <AISection />
+    case 'scr': return <ScreenerSection />
+    case 'pf': return <PortfolioSection />
+    default: return null
+  }
+}
+
+// ── 3분할 뷰: 패널 3개에 각자 섹션을 골라 끼워 동시에 본다 ──
+// 배경 확인 → 종목 매물대 → 내 포트폴리오를 오가며 탭을 갈아타는 대신 한 화면에.
+const MV_LS = 'stocklab.mv.v1'
+function MultiView({ picks, setPicks }) {
+  return (
+    <div className="mv">
+      {picks.map((k, i) => (
+        <div className="mv-pane" key={i}>
+          <select className="mv-pick" value={k} aria-label={`${i + 1}번 패널 선택`}
+            onChange={(e) => setPicks(picks.map((p, j) => (j === i ? e.target.value : p)))}>
+            {ALL_TABS.map((t) => (
+              <option key={t.key} value={t.key}>{t.emoji} {t.label}</option>
+            ))}
+          </select>
+          <div className="mv-body">{renderSection(k)}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
 
 // ── 개별 종목 (스크리너 · 포트폴리오 공용) ──
 // ⚠️ 무료 데이터의 한계상 '검증된 전략'을 만들 수 없다 — 생존편향(현재 상장 종목만),
@@ -340,6 +379,15 @@ const MIX_HORIZONS = [20, 60, 120]
 export default function App() {
   const [tab, setTab] = useState('sent')
   const lastTab = useRef({})                 // 묶음별 마지막 탭 — 묶음을 오가도 보던 곳으로 복귀
+  // 3분할: 켜짐 여부 + 패널별 선택을 브라우저에 저장(새로고침해도 유지)
+  const [mv, setMv] = useState(() => {
+    try {
+      const s = JSON.parse(localStorage.getItem(MV_LS))
+      if (s && Array.isArray(s.picks) && s.picks.length === 3) return s
+    } catch { /* 손상된 저장값은 기본값으로 */ }
+    return { on: false, picks: ['mix', 'vp', 'pf'] }
+  })
+  useEffect(() => { localStorage.setItem(MV_LS, JSON.stringify(mv)) }, [mv])
   if (!hasKey) return <Setup />
   const group = groupOf(tab)
   function pickGroup(g) {
@@ -351,16 +399,19 @@ export default function App() {
     setTab(k)
   }
   return (
-    <div className="wrap">
+    <div className={'wrap' + (mv.on ? ' wide' : '')}>
       <nav className="topnav">
         <div className="nav-groups">
           {TAB_GROUPS.map((g) => (
-            <button key={g.key} className={group.key === g.key ? 'on' : ''} onClick={() => pickGroup(g)}>
+            <button key={g.key} className={!mv.on && group.key === g.key ? 'on' : ''}
+              onClick={() => { setMv({ ...mv, on: false }); pickGroup(g) }}>
               {g.emoji} {g.label}
             </button>
           ))}
+          <button className={'mv-toggle' + (mv.on ? ' on' : '')}
+            onClick={() => setMv({ ...mv, on: !mv.on })}>⊞ 3분할</button>
         </div>
-        {group.tabs.length > 1 && (
+        {!mv.on && group.tabs.length > 1 && (
           <div className="nav-tabs">
             {group.tabs.map((t) => (
               <button key={t.key} className={tab === t.key ? 'on' : ''} onClick={() => pickTab(t.key)}>
@@ -370,16 +421,8 @@ export default function App() {
           </div>
         )}
       </nav>
-      {tab === 'sent' && <SentimentSection />}
-      {tab === 'liq' && <LiquiditySection />}
-      {tab === 'inf' && <InflationSection />}
-      {tab === 'fuel' && <FuelSection />}
-      {tab === 'mix' && <CompositeSection />}
-      {tab === 'cmp' && <ComparisonSection />}
-      {tab === 'vp' && <ProfileSection />}
-      {tab === 'ai' && <AISection />}
-      {tab === 'scr' && <ScreenerSection />}
-      {tab === 'pf' && <PortfolioSection />}
+      {mv.on ? <MultiView picks={mv.picks} setPicks={(p) => setMv({ ...mv, picks: p })} />
+        : renderSection(tab)}
     </div>
   )
 }
