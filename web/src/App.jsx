@@ -1477,20 +1477,21 @@ async function fetchPrices(code, win, lastDt) {
   return splitAdjust(all)
 }
 
-// 매물대 막대와 y축(가격)을 공유하는 주가 선 — 같은 높이·같은 가격 범위로 그려야 겹쳐 읽힌다.
-// viewBox를 세로만 실제 픽셀로 두고 가로는 100 고정 + preserveAspectRatio="none"으로 늘린다.
-// (선 굵기가 가로로 늘어나지 않게 vector-effect="non-scaling-stroke")
-function PriceLine({ series, lo, hi, height, px }) {
+// 매물대 막대 위에 겹쳐 그리는 주가선. 막대와 같은 영역·같은 가격 범위를 쓰므로
+// 선이 지나간 높이의 막대가 곧 그 가격대의 매물이다.
+// viewBox는 세로만 실제 픽셀, 가로는 100 고정 + preserveAspectRatio="none"으로 늘린다.
+// (가로로 늘어나도 선 굵기는 유지되게 vector-effect="non-scaling-stroke")
+function PriceLine({ series, lo, hi, height }) {
   if (!series.length || hi <= lo) return null
   const y = (p) => ((hi - p) / (hi - lo)) * height
   const n = Math.max(1, series.length - 1)
   const d = series.map((s, i) => `${i ? 'L' : 'M'}${(i / n) * 100},${y(s.close).toFixed(2)}`).join(' ')
   return (
-    <svg className="vp-chart" viewBox={`0 0 100 ${height}`} preserveAspectRatio="none"
-      style={{ height }} aria-label="주가 추이">
-      <path d={d} fill="none" stroke="#334155" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
-      <line x1="0" x2="100" y1={y(px)} y2={y(px)} stroke="#d97706" strokeWidth="1"
-        strokeDasharray="4 3" vectorEffect="non-scaling-stroke" />
+    <svg className="vp-overlay" viewBox={`0 0 100 ${height}`} preserveAspectRatio="none"
+      aria-label="주가 추이">
+      {/* 흰 테두리를 밑에 깔아 빨간·파란 막대 위에서도 선이 끊겨 보이지 않게 */}
+      <path d={d} fill="none" stroke="var(--card)" strokeWidth="3" vectorEffect="non-scaling-stroke" />
+      <path d={d} fill="none" stroke="#1f2937" strokeWidth="1.4" vectorEffect="non-scaling-stroke" />
     </svg>
   )
 }
@@ -1558,14 +1559,6 @@ function ProfileBody({ rows, series }) {
       )}
       <section className="card">
         <div className="vp-wrap">
-          {series.length > 1 && chartH > 0 && (
-            <div className="vp-chart-col">
-              {/* 막대 목록과 같은 높이·같은 가격 범위 → 가로로 이어 읽으면 그 가격대의 매물이 보인다.
-                  현재가선 자리(vp-now)만큼 위쪽에 여백을 줘야 두 축의 눈금이 어긋나지 않는다. */}
-              <PriceLine series={series} lo={loEdge} hi={hiEdge} height={chartH} px={px} />
-              <div className="vp-chart-cap">{series[0].dt} ~ {series[series.length - 1].dt}</div>
-            </div>
-          )}
           <div className="vp-bars" ref={barsRef}>
             {rows.map((r, i) => (
               // 모바일엔 커서가 없다 — 탭으로도 같은 정보가 뜨게 클릭을 함께 받는다
@@ -1579,11 +1572,18 @@ function ProfileBody({ rows, series }) {
                 }} />
               </div>
             ))}
-            {/* 현재가선은 절대배치 — 흐름에 끼우면 그만큼 아래 막대가 밀려 주가선과 눈금이 어긋난다 */}
+            {/* 주가선은 막대 위에 겹친다. 커서 판정은 막대가 받아야 하므로 pointer-events는 꺼둔다 */}
+            {series.length > 1 && chartH > 0 && (
+              <PriceLine series={series} lo={loEdge} hi={hiEdge} height={chartH} />
+            )}
+            {/* 현재가선도 절대배치 — 흐름에 끼우면 그만큼 아래 막대가 밀려 주가선과 눈금이 어긋난다 */}
             <div className="vp-now" style={{ top: `${(nowIdx / rows.length) * 100}%` }}>
               <span>현재가 {fmt(px)}</span>
             </div>
           </div>
+          {series.length > 1 && (
+            <div className="vp-chart-cap">{series[0].dt} ~ {series[series.length - 1].dt}</div>
+          )}
         </div>
         {hover != null && (
           <div className="vp-tip">
@@ -1596,8 +1596,8 @@ function ProfileBody({ rows, series }) {
           </div>
         )}
         <p className="note">
-          <b>왼쪽 주가선과 오른쪽 매물대는 같은 기간·같은 가격 축</b>입니다 — 가로로 이어 읽으면
-          그 가격대에서 얼마나 오래 머물렀고 매물이 얼마나 쌓였는지가 같이 보여요.{' '}
+          <b>주가선이 매물대 위에 겹쳐 있습니다</b> — 같은 가격 축이라, 선이 오래 머문 높이일수록
+          그 자리의 막대가 깁니다(매물이 쌓인 자리). 선이 빠르게 스쳐간 곳은 막대가 짧아요.{' '}
           <b style={{ color: '#c0392b' }}>빨강</b> = 현재가 위(반등 시 본전 매도 압력) ·{' '}
           <b style={{ color: '#2471a3' }}>파랑</b> = 아래(하락 시 받치는 손바뀜 물량) ·
           막대 길이 = 잔존 물량(최대=1). 막대가 짧은 곳은 <b>진공 구간</b> — 가격이 빠르게 지나가기 쉬워요.

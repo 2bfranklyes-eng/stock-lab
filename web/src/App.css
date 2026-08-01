@@ -95,12 +95,13 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   border: none; background: none; color: #94a3b8; cursor: pointer; font-size: 12px; padding: 4px 8px; }
 .vp-none { font-size: 11px; color: #94a3b8; align-self: center; margin-left: 4px; }
 
-/* ── 매물대 탭: 주가선 + 가격대별 가로 막대 (y축 공유) ── */
-.vp-wrap { display: flex; gap: 10px; align-items: flex-start; }
-.vp-chart-col { flex: 0 0 38%; min-width: 0; }
-.vp-chart { display: block; width: 100%; }
-.vp-chart-cap { font-size: 10px; color: #94a3b8; text-align: center; margin-top: 4px; }
-.vp-bars { flex: 1 1 auto; min-width: 0; position: relative; }
+/* ── 매물대 탭: 가격대별 가로 막대 위에 주가선을 겹침 (같은 가격 축) ── */
+.vp-wrap { position: relative; }
+.vp-bars { position: relative; }
+/* 주가선이 지나가는 자리라 막대는 옅게 — 선이 막대에 묻히면 겹쳐 볼 이유가 없다 */
+.vp-overlay { position: absolute; left: 64px; right: 0; top: 0; height: 100%;
+  pointer-events: none; overflow: visible; }
+.vp-chart-cap { font-size: 10px; color: #94a3b8; text-align: right; margin-top: 6px; }
 .vp-row { display: flex; align-items: center; gap: 8px; height: 9px; cursor: crosshair; }
 .vp-row.on .vp-bar { outline: 1px solid #d97706; opacity: 1; }
 .vp-row.on .vp-price { color: #d97706; font-weight: 700; }
@@ -111,7 +112,7 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .vp-tip em { font-style: normal; color: #475569; }
 .vp-tip em b { color: #d97706; font-size: 12.5px; }
 .vp-price { flex: 0 0 56px; font-size: 10px; color: #94a3b8; text-align: right; line-height: 1; }
-.vp-bar { height: 7px; border-radius: 2px; opacity: .85; }
+.vp-bar { height: 7px; border-radius: 2px; opacity: .42; }
 /* 흐름에서 빼내 절대배치 — 막대 사이에 끼우면 그만큼 아래가 밀려 주가선과 눈금이 어긋난다 */
 .vp-now { position: absolute; left: 64px; right: 0; border-top: 2px dashed #d97706;
   pointer-events: none; }
@@ -133,10 +134,8 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   .vp-row { height: 12px; }
   .vp-bar { height: 9px; }
   .vp-price { flex-basis: 48px; }
-  /* 좁은 화면에선 주가선을 줄여 매물대 막대가 읽을 만한 폭을 유지한다 */
-  .vp-wrap { gap: 6px; }
-  .vp-chart-col { flex-basis: 30%; }
-  .vp-now { left: 48px; }
+  /* 막대 시작 x = 가격라벨 폭(48) + .vp-row gap(8). 이 값이 어긋나면 선과 막대가 가로로 밀린다 */
+  .vp-now, .vp-overlay { left: 56px; }
 }
 
 :root { --card: #ffffff; --line: #e2e8f0; --track: #eef2f6; }
