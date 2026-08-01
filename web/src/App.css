@@ -115,6 +115,17 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 @media (max-width: 640px) {
   .cols { flex-direction: column; gap: 8px; }
   .divider { width: 100%; height: 1px; margin: 12px 0; }
+  /* 수치 카드는 3개 나란히면 좁은 화면에서 값이 잘린다 → 최소 폭을 주고 알아서 접히게.
+     '259,107~269,093 (+0.6%)' 같은 긴 값이 있어 글자도 줄이고 줄바꿈을 허용한다. */
+  .raw-figs { flex-wrap: wrap; gap: 8px; }
+  .raw-fig { flex: 1 1 140px; padding: 9px 8px; }
+  .rf-val { font-size: 14px; overflow-wrap: anywhere; }
+  .rf-label { font-size: 10.5px; }
+  .vp-search { max-width: none; }
+  /* 손가락으로는 9px 막대를 정확히 짚기 어렵다 — 매물대 막대만 조금 키운다 */
+  .vp-row { height: 12px; }
+  .vp-bar { height: 9px; }
+  .vp-price { flex-basis: 48px; }
 }
 
 :root { --card: #ffffff; --line: #e2e8f0; --track: #eef2f6; }

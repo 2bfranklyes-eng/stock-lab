@@ -1485,8 +1485,10 @@ function ProfileBody({ rows }) {
           {rows.map((r, i) => (
             <div key={r.bin_lo}>
               {i === nowIdx && <div className="vp-now"><span>현재가 {fmt(px)}</span></div>}
+              {/* 모바일엔 커서가 없다 — 탭으로도 같은 정보가 뜨게 클릭을 함께 받는다 */}
               <div className={'vp-row' + (hover === i ? ' on' : '')}
-                onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}>
+                onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}
+                onClick={() => setHover(hover === i ? null : i)}>
                 <span className="vp-price">{i % step === 0 ? fmt(r.bin_lo) : ''}</span>
                 <div className="vp-bar" style={{
                   width: `${Math.max(0.5, r.share / max * 100)}%`,
@@ -1510,7 +1512,7 @@ function ProfileBody({ rows }) {
           <b style={{ color: '#c0392b' }}>빨강</b> = 현재가 위(반등 시 본전 매도 압력) ·{' '}
           <b style={{ color: '#2471a3' }}>파랑</b> = 아래(하락 시 받치는 손바뀜 물량) ·
           막대 길이 = 잔존 물량(최대=1). 막대가 짧은 곳은 <b>진공 구간</b> — 가격이 빠르게 지나가기 쉬워요.
-          <b> 막대에 커서를 올리면</b> 거기까지 가는 데 며칠치 거래량이 필요한지 나옵니다.
+          <b> 막대를 누르거나 커서를 올리면</b> 거기까지 가는 데 며칠치 거래량이 필요한지 나옵니다.
         </p>
       </section>
     </>
