@@ -96,7 +96,15 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .vp-none { font-size: 11px; color: #94a3b8; align-self: center; margin-left: 4px; }
 
 /* ── 매물대 탭: 가격대별 가로 막대 ── */
-.vp-row { display: flex; align-items: center; gap: 8px; height: 9px; }
+.vp-row { display: flex; align-items: center; gap: 8px; height: 9px; cursor: crosshair; }
+.vp-row.on .vp-bar { outline: 1px solid #d97706; opacity: 1; }
+.vp-row.on .vp-price { color: #d97706; font-weight: 700; }
+.vp-tip { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-top: 12px;
+  padding: 8px 12px; border-radius: 10px; background: var(--track); font-size: 12px; }
+.vp-tip b { font-size: 13px; }
+.vp-tip span { color: #94a3b8; }
+.vp-tip em { font-style: normal; color: #475569; }
+.vp-tip em b { color: #d97706; font-size: 12.5px; }
 .vp-price { flex: 0 0 56px; font-size: 10px; color: #94a3b8; text-align: right; line-height: 1; }
 .vp-bar { height: 7px; border-radius: 2px; opacity: .85; }
 .vp-now { position: relative; border-top: 2px dashed #d97706; margin: 3px 0 3px 64px; }
@@ -132,6 +140,7 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   .outlook .owarn { background: #2a1f07; border-color: #78350f; color: #fcd34d; }
   .outlook .owarn b { color: #fde68a; }
   .scr-q, .pf-add input, .pf-hits button { color: #f1f5f9; }
+  .vp-tip em { color: #cbd5e1; }
   .note.owarn-inline { background: #2a1f07; border-color: #78350f; color: #fcd34d; }
   .note.owarn-inline b { color: #fde68a; }
   .stats.scr .scr-name .same  { color: #94a3b8; }

@@ -204,13 +204,24 @@ def analyze(df, V, px, w, max_bins=90, quiet=False):
     return results
 
 
-def to_rows(code, results, px, last_dt):
+def to_rows(code, results, px, last_dt, w=None):
+    """w = 일별 거래수량. 넘기면 절대 수량·거래량 배율까지 담아 '소화 일수'를 쓸 수 있게 한다.
+    (rem은 가중치와 같은 단위 — 거래수량을 넣었으므로 그대로 '주 수' 추정치다)"""
+    daily = vratio = None
+    if w is not None:
+        w = np.asarray(w, dtype=float)
+        recent = w[-20:]
+        daily = float(recent.mean()) if len(recent) else None
+        if daily:
+            vratio = round(float(w[-1] / daily), 4)
+            daily = round(daily, 2)
     out = []
     for _label, days, edges, rem in results:
         pct = rem / max(rem.sum(), 1e-9) * 100
         out += [{"code": code, "win_days": days,
                  "bin_lo": round(float(edges[b]), 4), "bin_hi": round(float(edges[b + 1]), 4),
-                 "share": round(float(pct[b]), 4), "px": px, "dt": last_dt}
+                 "share": round(float(pct[b]), 4), "px": px, "dt": last_dt,
+                 "qty": round(float(rem[b]), 2), "daily_qty": daily, "vol_ratio": vratio}
                 for b in range(len(rem))]
     return out
 
@@ -256,7 +267,7 @@ def run(key, push_rows=None):
     if push_rows is None:
         draw(key, name, df, px, results)
     else:
-        push_rows += to_rows(key, results, px, last_dt)
+        push_rows += to_rows(key, results, px, last_dt, w)
 
 
 # ── 개별종목 ──────────────────────────────────────────────────────────────
@@ -307,8 +318,9 @@ def run_stock(code, name, push_rows, quiet=False):
         for e in events:                      # 헤더 뒤에 찍어야 어느 종목 것인지 헷갈리지 않는다
             print(f"  (주가 보정: {e})")
     # 종목은 60구간 — 대시보드 막대 60개면 해상도가 충분하고, 1,700종목이면 저장량이 1.5배 차이난다
-    results = analyze(df, V, px, qty(df), max_bins=60, quiet=quiet)
-    push_rows += to_rows(code, results, px, last_dt)
+    w = qty(df)
+    results = analyze(df, V, px, w, max_bins=60, quiet=quiet)
+    push_rows += to_rows(code, results, px, last_dt, w)
 
 
 def stock_list():

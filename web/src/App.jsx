@@ -1427,19 +1427,39 @@ function ProfileSection() {
   )
 }
 
+// 수량 표기: 억/만주 단위로 접어 읽기 쉽게
+const qtyFmt = (v) => {
+  if (v == null) return '—'
+  if (v >= 1e8) return (v / 1e8).toFixed(1) + '억주'
+  if (v >= 1e4) return Math.round(v / 1e4).toLocaleString() + '만주'
+  return Math.round(v).toLocaleString() + '주'
+}
+
 function ProfileBody({ rows }) {
+  const [hover, setHover] = useState(null)
   const px = rows[0].px
   const dt = rows[0].dt
+  const daily = rows[0].daily_qty          // 최근 20일 평균 거래량(주)
+  const vratio = rows[0].vol_ratio
   const max = Math.max(...rows.map((r) => r.share))
   const mid = (r) => (r.bin_lo + r.bin_hi) / 2
-  const upShare = rows.filter((r) => mid(r) > px).reduce((s, r) => s + r.share, 0)
   const above = rows.filter((r) => mid(r) > px)
+  const upShare = above.reduce((s, r) => s + r.share, 0)
   const wall = above.length ? above.reduce((a, b) => (b.share > a.share ? b : a)) : null
+  const upQty = above.reduce((s, r) => s + (r.qty || 0), 0)
   const fmt = (v) => Math.round(v).toLocaleString()
   // 가격 라벨은 12개 안팎만 (90구간을 다 쓰면 겹쳐서 못 읽음)
   const step = Math.max(1, Math.ceil(rows.length / 12))
   // 현재가 표시선: 현재가가 속한 구간 위에 그린다
   const nowIdx = rows.findIndex((r) => r.bin_lo <= px)
+
+  // 현재가에서 그 구간까지 '지나가야 할' 물량. 위로 가면 저항, 아래로 가면 지지를 누적한다.
+  // rows는 고가→저가 순이라 위쪽은 hover~nowIdx, 아래쪽은 nowIdx~hover 구간이 경로가 된다.
+  function pathQty(i) {
+    const [a, b] = i < nowIdx ? [i, nowIdx] : [nowIdx, i]
+    return rows.slice(a, b + 1).reduce((s, r) => s + (r.qty || 0), 0)
+  }
+
   return (
     <>
       <div className="raw-figs">
@@ -1449,12 +1469,24 @@ function ProfileBody({ rows }) {
         <div className="raw-fig"><span className="rf-label">최대 저항(본전 매물 벽)</span>
           <span className="rf-val">{wall ? `${fmt(wall.bin_lo)}~${fmt(wall.bin_hi)} (+${(mid(wall) / px * 100 - 100).toFixed(1)}%)` : '없음 (신고가 영역)'}</span></div>
       </div>
+      {daily > 0 && (
+        <div className="raw-figs">
+          <div className="raw-fig"><span className="rf-label">위쪽 매물 전량 소화에 필요한 거래일</span>
+            <span className="rf-val">{above.length ? `${(upQty / daily).toFixed(1)}일치` : '—'}</span></div>
+          <div className="raw-fig"><span className="rf-label">하루 평균 거래량 (20일)</span>
+            <span className="rf-val">{qtyFmt(daily)}</span></div>
+          <div className="raw-fig"><span className="rf-label">최근일 거래량 배율</span>
+            <span className="rf-val" style={{ color: vratio >= 1.5 ? '#c0392b' : undefined }}>
+              {vratio == null ? '—' : `${vratio.toFixed(2)}배`}</span></div>
+        </div>
+      )}
       <section className="card">
         <div className="vp-bars">
           {rows.map((r, i) => (
             <div key={r.bin_lo}>
               {i === nowIdx && <div className="vp-now"><span>현재가 {fmt(px)}</span></div>}
-              <div className="vp-row">
+              <div className={'vp-row' + (hover === i ? ' on' : '')}
+                onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}>
                 <span className="vp-price">{i % step === 0 ? fmt(r.bin_lo) : ''}</span>
                 <div className="vp-bar" style={{
                   width: `${Math.max(0.5, r.share / max * 100)}%`,
@@ -1464,10 +1496,21 @@ function ProfileBody({ rows }) {
             </div>
           ))}
         </div>
+        {hover != null && (
+          <div className="vp-tip">
+            <b>{fmt(rows[hover].bin_lo)} ~ {fmt(rows[hover].bin_hi)}</b>
+            <span>({(mid(rows[hover]) / px * 100 - 100).toFixed(1)}%)</span>
+            {rows[hover].qty != null && <em>이 구간 {qtyFmt(rows[hover].qty)}</em>}
+            {daily > 0 && (
+              <em>현재가↔여기 {qtyFmt(pathQty(hover))} = <b>{(pathQty(hover) / daily).toFixed(1)}일치</b></em>
+            )}
+          </div>
+        )}
         <p className="note">
           <b style={{ color: '#c0392b' }}>빨강</b> = 현재가 위(반등 시 본전 매도 압력) ·{' '}
           <b style={{ color: '#2471a3' }}>파랑</b> = 아래(하락 시 받치는 손바뀜 물량) ·
           막대 길이 = 잔존 물량(최대=1). 막대가 짧은 곳은 <b>진공 구간</b> — 가격이 빠르게 지나가기 쉬워요.
+          <b> 막대에 커서를 올리면</b> 거기까지 가는 데 며칠치 거래량이 필요한지 나옵니다.
         </p>
       </section>
     </>
@@ -1485,6 +1528,9 @@ function ProfileMethod() {
         <li><b>집계 구간</b> — 5년~1개월로 잘라 계산합니다. 짧은 구간 = 최근 진입자의 물량만 본 것.</li>
         <li><b>개별종목이 더 정확합니다</b> — 종목은 <b>거래대금÷시가총액</b>이 곧 진짜 회전율이라
           모델이 정의대로 돌아가고, 매물대라는 개념 자체도 합성물인 지수보다 또렷해요.</li>
+        <li><b>소화 일수</b> — 쌓인 물량 ÷ 하루 평균 거래량. "이 구간을 지나가려면 며칠치 거래가
+          필요한가"입니다. 짧을수록 빨리 통과하지만, <b>어느 방향으로 갈지는 말해주지 않습니다</b> —
+          거래가 매수로 터질지 매도로 터질지는 매물대 밖의 일이에요.</li>
       </ul>
       <p className="note">⚠️ <b>한계</b>: 지수는 개별 종목의 합성이라 매물대가 개별주보다 흐릿하고,
         회전율도 유통주식수 대신 <b>직전 1년 거래량 합 대비</b>로 근사합니다(한국 지수는 KRX 실제 회전율 사용) ·
