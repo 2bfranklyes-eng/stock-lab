@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   LineChart, Line, XAxis, YAxis, Tooltip,
   ResponsiveContainer, ReferenceLine, CartesianGrid,
@@ -1311,6 +1311,7 @@ function ProfileSection() {
   const [state, setState] = useState('loading')
   const [stocks, setStocks] = useState([])
   const [q, setQ] = useState('')
+  const [series, setSeries] = useState([])
 
   // 종목 목록은 vp_stocks — 매물대가 실제로 계산된 종목의 단일 출처라
   // '검색은 되는데 데이터가 없는' 불일치가 생기지 않는다. (1,700여 종목이라 페이지네이션)
@@ -1367,6 +1368,7 @@ function ProfileSection() {
         if (!alive) return
         if (!data || data.length === 0) { setState('empty'); return }
         setRows(data); setState('ok')
+        setSeries(await fetchPrices(code, win, data[0].dt))   // 주가선은 늦게 와도 되므로 뒤에
       } catch {
         if (alive) setState('error')
       }
@@ -1421,7 +1423,7 @@ function ProfileSection() {
           <span>다음 자동 갱신(평일 아침 7시) 후에 채워져요</span>
         </div>
       )}
-      {state === 'ok' && <ProfileBody rows={rows} />}
+      {state === 'ok' && <ProfileBody rows={rows} series={series} />}
       <ProfileMethod />
     </>
   )
@@ -1435,7 +1437,65 @@ const qtyFmt = (v) => {
   return Math.round(v).toLocaleString() + '주'
 }
 
-function ProfileBody({ rows }) {
+// 액면분할·병합 보정 — profile.py의 split_adjust와 같은 규칙이다(둘 중 하나만 고치면 안 됨).
+// 상장주식수가 급변한 날 주가가 그 역수만큼 움직였으면(=시총 연속) 분할류로 보고
+// 이전 구간 가격에 배율을 적용한다. 유상증자는 시총이 함께 늘어 주가가 안 꺾이므로 안 걸린다.
+// 이걸 안 하면 분할 종목(예: LS ELECTRIC 1:5)의 주가선이 매물대와 어긋나 보인다.
+function splitAdjust(rows) {
+  const f = rows.map(() => 1)
+  for (let i = 1; i < rows.length; i++) {
+    const s0 = rows[i - 1].shares, s1 = rows[i].shares
+    const p0 = rows[i - 1].close, p1 = rows[i].close
+    if (!s0 || !s1 || !p0) continue
+    const r = s1 / s0
+    if ((r > 1.5 || r < 0.67) && Math.abs((p1 / p0) * r - 1) < 0.25) {
+      for (let j = 0; j < i; j++) f[j] /= r
+    }
+  }
+  return rows.map((r, i) => ({ dt: r.dt, close: r.close * f[i] }))
+}
+
+// 매물대와 같은 구간의 일별 종가. 한국(지수·종목)은 stock_daily가 원자료고,
+// 미국 지수는 거기 없어서 비교 탭이 쓰는 price_daily로 간다.
+const VP_US_PRICE = { spx: 'us_index', nasdaq: 'us_nasdaq', dow: 'us_dow' }
+
+async function fetchPrices(code, win, lastDt) {
+  const from = new Date(new Date(lastDt).getTime() - win * 86400000).toISOString().slice(0, 10)
+  if (VP_US_PRICE[code]) {
+    const { data } = await supabase.from('price_daily').select('dt,close')
+      .eq('market', 'US').eq('code', VP_US_PRICE[code]).gte('dt', from).order('dt')
+    return (data || []).map((r) => ({ dt: r.dt, close: r.close }))
+  }
+  let all = []                                   // 5년 창은 1,000행을 넘어 페이지네이션이 필요
+  for (let f = 0; f < 3000; f += 1000) {
+    const { data } = await supabase.from('stock_daily').select('dt,close,shares')
+      .eq('code', code).gte('dt', from).order('dt').range(f, f + 999)
+    if (!data || !data.length) break
+    all = all.concat(data)
+    if (data.length < 1000) break
+  }
+  return splitAdjust(all)
+}
+
+// 매물대 막대와 y축(가격)을 공유하는 주가 선 — 같은 높이·같은 가격 범위로 그려야 겹쳐 읽힌다.
+// viewBox를 세로만 실제 픽셀로 두고 가로는 100 고정 + preserveAspectRatio="none"으로 늘린다.
+// (선 굵기가 가로로 늘어나지 않게 vector-effect="non-scaling-stroke")
+function PriceLine({ series, lo, hi, height, px }) {
+  if (!series.length || hi <= lo) return null
+  const y = (p) => ((hi - p) / (hi - lo)) * height
+  const n = Math.max(1, series.length - 1)
+  const d = series.map((s, i) => `${i ? 'L' : 'M'}${(i / n) * 100},${y(s.close).toFixed(2)}`).join(' ')
+  return (
+    <svg className="vp-chart" viewBox={`0 0 100 ${height}`} preserveAspectRatio="none"
+      style={{ height }} aria-label="주가 추이">
+      <path d={d} fill="none" stroke="#334155" strokeWidth="1.2" vectorEffect="non-scaling-stroke" />
+      <line x1="0" x2="100" y1={y(px)} y2={y(px)} stroke="#d97706" strokeWidth="1"
+        strokeDasharray="4 3" vectorEffect="non-scaling-stroke" />
+    </svg>
+  )
+}
+
+function ProfileBody({ rows, series }) {
   const [hover, setHover] = useState(null)
   const px = rows[0].px
   const dt = rows[0].dt
@@ -1452,6 +1512,22 @@ function ProfileBody({ rows }) {
   const step = Math.max(1, Math.ceil(rows.length / 12))
   // 현재가 표시선: 현재가가 속한 구간 위에 그린다
   const nowIdx = rows.findIndex((r) => r.bin_lo <= px)
+  // rows는 고가→저가 순 — 막대 영역의 위·아래 끝이 곧 주가 차트의 y 범위가 된다
+  const hiEdge = rows[0].bin_hi
+  const loEdge = rows[rows.length - 1].bin_lo
+  // 차트 높이는 막대 목록을 실측해 맞춘다. 막대 높이가 CSS(모바일 12px/데스크톱 9px)로
+  // 달라지므로 상수로 계산하면 화면 폭에 따라 두 축이 어긋난다.
+  const barsRef = useRef(null)
+  const [chartH, setChartH] = useState(0)
+  useEffect(() => {
+    const el = barsRef.current
+    if (!el) return
+    const measure = () => setChartH(el.offsetHeight)
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [rows])
 
   // 현재가에서 그 구간까지 '지나가야 할' 물량. 위로 가면 저항, 아래로 가면 지지를 누적한다.
   // rows는 고가→저가 순이라 위쪽은 hover~nowIdx, 아래쪽은 nowIdx~hover 구간이 경로가 된다.
@@ -1481,12 +1557,19 @@ function ProfileBody({ rows }) {
         </div>
       )}
       <section className="card">
-        <div className="vp-bars">
-          {rows.map((r, i) => (
-            <div key={r.bin_lo}>
-              {i === nowIdx && <div className="vp-now"><span>현재가 {fmt(px)}</span></div>}
-              {/* 모바일엔 커서가 없다 — 탭으로도 같은 정보가 뜨게 클릭을 함께 받는다 */}
-              <div className={'vp-row' + (hover === i ? ' on' : '')}
+        <div className="vp-wrap">
+          {series.length > 1 && chartH > 0 && (
+            <div className="vp-chart-col">
+              {/* 막대 목록과 같은 높이·같은 가격 범위 → 가로로 이어 읽으면 그 가격대의 매물이 보인다.
+                  현재가선 자리(vp-now)만큼 위쪽에 여백을 줘야 두 축의 눈금이 어긋나지 않는다. */}
+              <PriceLine series={series} lo={loEdge} hi={hiEdge} height={chartH} px={px} />
+              <div className="vp-chart-cap">{series[0].dt} ~ {series[series.length - 1].dt}</div>
+            </div>
+          )}
+          <div className="vp-bars" ref={barsRef}>
+            {rows.map((r, i) => (
+              // 모바일엔 커서가 없다 — 탭으로도 같은 정보가 뜨게 클릭을 함께 받는다
+              <div key={r.bin_lo} className={'vp-row' + (hover === i ? ' on' : '')}
                 onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}
                 onClick={() => setHover(hover === i ? null : i)}>
                 <span className="vp-price">{i % step === 0 ? fmt(r.bin_lo) : ''}</span>
@@ -1495,8 +1578,12 @@ function ProfileBody({ rows }) {
                   background: mid(r) > px ? '#c0392b' : '#2471a3',
                 }} />
               </div>
+            ))}
+            {/* 현재가선은 절대배치 — 흐름에 끼우면 그만큼 아래 막대가 밀려 주가선과 눈금이 어긋난다 */}
+            <div className="vp-now" style={{ top: `${(nowIdx / rows.length) * 100}%` }}>
+              <span>현재가 {fmt(px)}</span>
             </div>
-          ))}
+          </div>
         </div>
         {hover != null && (
           <div className="vp-tip">
@@ -1509,6 +1596,8 @@ function ProfileBody({ rows }) {
           </div>
         )}
         <p className="note">
+          <b>왼쪽 주가선과 오른쪽 매물대는 같은 기간·같은 가격 축</b>입니다 — 가로로 이어 읽으면
+          그 가격대에서 얼마나 오래 머물렀고 매물이 얼마나 쌓였는지가 같이 보여요.{' '}
           <b style={{ color: '#c0392b' }}>빨강</b> = 현재가 위(반등 시 본전 매도 압력) ·{' '}
           <b style={{ color: '#2471a3' }}>파랑</b> = 아래(하락 시 받치는 손바뀜 물량) ·
           막대 길이 = 잔존 물량(최대=1). 막대가 짧은 곳은 <b>진공 구간</b> — 가격이 빠르게 지나가기 쉬워요.
