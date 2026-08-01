@@ -88,15 +88,22 @@ def real_turnover(df, code):
     return v
 
 
-def build(df, nbins, V, wcol="Volume"):
-    """일봉 OHLCV + 회전율 → (구간 경계, 미소화 추정 프로파일, 일별 '두께' 지표).
-    wcol = 가격대에 뿌릴 가중치 컬럼. 지수는 거래량, 개별종목은 거래대금(저가주 왜곡 없음)."""
+def qty(df):
+    """가격대에 뿌릴 가중치 = 거래'수량'. 매물대는 '몇 주가 물려 있나'라 수량이 맞다.
+    거래대금을 그대로 쓰면 같은 돈도 주가가 낮을 땐 주식 수가 많다는 걸 놓쳐 고가 구간이
+    부풀고, 거래량을 그대로 쓰면(지수) 저가주가 왜곡한다 → 거래대금÷당일 대표가로 통일한다.
+    (KRX가 종목별 거래량을 주긴 하지만 지수엔 그 개념이 없어 이쪽이 두 경우에 다 맞는다)"""
+    return df["tval"] / ((df["High"] + df["Low"] + df["Close"]) / 3)
+
+
+def build(df, nbins, V, w):
+    """일봉 + 회전율 + 가중치 배열 → (구간 경계, 미소화 추정 프로파일, 일별 '두께' 지표)."""
     lo, hi = df["Low"].min(), df["High"].max()
     edges = np.linspace(lo, hi, nbins + 1)
     bin_lo, bin_hi = edges[:-1], edges[1:]
 
-    vb_days = []                             # 하루 거래량을 고가~저가와 겹치는 구간에 배분
-    for l, h, v in zip(df["Low"], df["High"], df[wcol]):
+    vb_days = []                             # 하루 거래수량을 고가~저가와 겹치는 구간에 배분
+    for l, h, v in zip(df["Low"], df["High"], np.asarray(w)):
         if v <= 0:
             vb_days.append(None)
             continue
@@ -171,16 +178,17 @@ def draw(key, name, df, px, results):
     print(f"  저장: profile_{key}.png")
 
 
-def analyze(df, V, px, wcol="Volume"):
+def analyze(df, V, px, w):
     """구간별로 프로파일을 계산하고 콘솔 요약까지. → [(label, days, edges, rem)]"""
     results, thin5, df5 = [], None, None
+    w = np.asarray(w)
     for label, days in WINDOWS:
-        mask = df.index >= df.index[-1] - pd.Timedelta(days=days)
+        mask = np.asarray(df.index >= df.index[-1] - pd.Timedelta(days=days))
         sub = df[mask]
         if len(sub) < 15:
             continue
         nbins = min(90, max(15, len(sub) // 3))   # 짧은 구간은 구간 수도 줄여 과분해 방지
-        edges, rem, thin = build(sub, nbins, V[mask], wcol)
+        edges, rem, thin = build(sub, nbins, V[mask], w[mask])
         window_summary(label, edges, rem, px)
         results.append((label, days, edges, rem))
         if label == "5년":
@@ -221,24 +229,24 @@ def run(key, push_rows=None):
     sym, name = PRESETS[key]
     df = krx_index(key) if key in REAL_TURN else None
     if df is not None:                       # KRX 직통(한국) — 가격·거래대금·시총이 한 소스
-        wcol = "tval"
+        w = qty(df)
         V = np.clip(df["tval"] / df["mktcap"], 0, 0.2).to_numpy()
-        src = f"KRX 지수 일별시세 {len(df)}일 · 가중치=거래대금 · 실제 회전율"
+        src = f"KRX 지수 일별시세 {len(df)}일 · 실제 회전율"
     else:                                    # 야후(미국, 또는 KRX 적재 전)
-        wcol = "Volume"
         src = None
         df = yf.Ticker(sym).history(period="5y", auto_adjust=True)
         df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
         zero = (df["Volume"] <= 0).mean()
         if zero > .2:
             print(f"[경고] {name}: 거래량 0인 날이 {zero*100:.0f}% — 프로파일 신뢰도 낮음")
+        w = df["Volume"]                     # 야후는 거래량이 이미 수량 단위
         V = real_turnover(df, REAL_TURN[key]) if key in REAL_TURN else turnover(df)
     px = float(df["Close"].iloc[-1])
     last_dt = df.index[-1].strftime("%Y-%m-%d")
     print(f"\n=== {name} — 현재가 {px:,.0f} ({last_dt}) ===")
     if src:
         print(f"  (소스: {src})")
-    results = analyze(df, V, px, wcol)
+    results = analyze(df, V, px, w)
     if push_rows is None:
         draw(key, name, df, px, results)
     else:
@@ -285,7 +293,7 @@ def run_stock(code, name, push_rows):
     print(f"\n=== {name}({code}) — 현재가 {px:,.0f} ({last_dt}) · 회전율 중앙값 {np.median(V)*100:.2f}%/일 ===")
     for e in events:                          # 헤더 뒤에 찍어야 어느 종목 것인지 헷갈리지 않는다
         print(f"  (주가 보정: {e})")
-    results = analyze(df, V, px, wcol="tval")
+    results = analyze(df, V, px, qty(df))
     push_rows += to_rows(code, results, px, last_dt)
 
 
