@@ -30,6 +30,15 @@ TARGETS = {
     "kr_turn_kospi":  ("idx/kospi_dd_trd", "코스피", "sto/stk_bydd_trd", "코스피 회전율(거래대금/시총)"),
     "kr_turn_kosdaq": ("idx/kosdaq_dd_trd", "코스닥", "sto/ksq_bydd_trd", "코스닥 회전율(거래대금/시총)"),
 }
+# 개별종목 매물대용 워치리스트 — stock_meta 시총 상위 N + SCREENER_ALWAYS(보유 종목).
+# API는 '하루치 전 종목'을 한 번에 주므로 종목 수를 늘려도 호출 수는 그대로다(저장량만 늘어남).
+WATCH_N = int(os.environ.get("VP_STOCK_N", "30"))
+ALWAYS = [c.strip() for c in os.environ.get("SCREENER_ALWAYS", "").split(",") if c.strip()]
+MKT_PATH = {"KOSPI": "sto/stk_bydd_trd", "KOSDAQ": "sto/ksq_bydd_trd"}
+# 종목 스캔과 같은 날짜 루프에서 지수 OHLC도 받아 stock_daily에 함께 적재한다.
+# 야후 ^KS11은 하루 늦고 거래'량'만 주는데, KRX는 당일 고저가 + 거래'대금' + 시총을 준다
+# → 매물대 가중치가 저가주 왜곡 없는 거래대금이 되고, 회전율 분모까지 같은 소스로 맞춰진다.
+IDX_TARGETS = {"kospi": ("idx/kospi_dd_trd", "코스피"), "kosdaq": ("idx/kosdaq_dd_trd", "코스닥")}
 
 
 def get(path, bas_dd):
@@ -115,6 +124,89 @@ def run(force_start=None):
         {"source": "krx", "market": "KR", "rows": total, "status": "ok"}).execute()
 
 
+def watchlist():
+    """{code: market} — 시총 상위 N + 지정 종목. stock_meta가 비었으면 빈 dict."""
+    rows = sb.table("stock_meta").select("code,name,market,marcap") \
+             .order("marcap", desc=True).limit(WATCH_N).execute().data or []
+    have = {r["code"] for r in rows}
+    if ALWAYS:
+        extra = sb.table("stock_meta").select("code,name,market") \
+                  .in_("code", [c for c in ALWAYS if c not in have]).execute().data or []
+        rows += extra
+    return {r["code"]: r["market"] for r in rows if r["market"] in MKT_PATH}
+
+
+def num(v):
+    """KRX 응답의 숫자 문자열 → float. 빈값·'-'는 None."""
+    v = (v or "").strip().replace(",", "")
+    try:
+        return float(v)
+    except ValueError:
+        return None
+
+
+def run_stocks(force_start=None):
+    """워치리스트 종목의 일별 시세(거래대금·시총·상장주식수)를 stock_daily에 적재.
+    스캔은 '날짜 단위'(한 콜에 그 날 전 종목) — 워치리스트가 바뀌어 과거가 빈 종목이 생기면
+    `python krx.py --stocks 20210801` 로 전체 재스캔해야 메워진다."""
+    codes = watchlist()
+    if not codes:
+        print("[KR] stock_meta 비어 있음 — 종목은 건너뛰고 지수 OHLC만 수집")
+    paths = sorted({MKT_PATH[m] for m in codes.values()})
+    r = sb.table("stock_daily").select("dt").order("dt", desc=True).limit(1).execute().data
+    start = force_start or (date.fromisoformat(r[0]["dt"]) + timedelta(days=1) if r else BACKFILL_START)
+    today = date.today()
+    print(f"[KR] 종목 {len(codes)}개 + 지수 {len(IDX_TARGETS)}종 · {start}~{today} "
+          f"· 하루 {len(paths) + len(IDX_TARGETS)}콜")
+
+    d, recs, calls, saved = start, [], 0, 0
+    while d <= today:
+        if d.weekday() < 5:                # 주말 스킵(휴일은 빈 응답)
+            bas = d.strftime("%Y%m%d")
+            for p in paths:
+                for x in get(p, bas):
+                    if x["ISU_CD"] not in codes:
+                        continue
+                    recs.append({"code": x["ISU_CD"], "dt": d.isoformat(),
+                                 "open": num(x["TDD_OPNPRC"]), "high": num(x["TDD_HGPRC"]),
+                                 "low": num(x["TDD_LWPRC"]), "close": num(x["TDD_CLSPRC"]),
+                                 "tval": num(x["ACC_TRDVAL"]), "shares": num(x["LIST_SHRS"]),
+                                 "mktcap": num(x["MKTCAP"])})
+                calls += 1
+                time.sleep(0.15)
+            for key, (p, idx_nm) in IDX_TARGETS.items():     # 지수 OHLC도 같은 날짜 루프에서
+                for x in get(p, bas):
+                    if x["IDX_NM"].strip() != idx_nm or not num(x["CLSPRC_IDX"]):
+                        continue
+                    recs.append({"code": key, "dt": d.isoformat(),
+                                 "open": num(x["OPNPRC_IDX"]), "high": num(x["HGPRC_IDX"]),
+                                 "low": num(x["LWPRC_IDX"]), "close": num(x["CLSPRC_IDX"]),
+                                 "tval": num(x["ACC_TRDVAL"]), "shares": None,
+                                 "mktcap": num(x["MKTCAP"])})
+                    break
+                calls += 1
+                time.sleep(0.15)
+            if len(recs) >= 600:
+                sb.table("stock_daily").upsert(recs, on_conflict="code,dt").execute()
+                saved += len(recs)
+                print(f"  [KR] 종목: ~{recs[-1]['dt']} 누적 {saved}행", flush=True)
+                recs = []
+        d += timedelta(days=1)
+    if recs:
+        sb.table("stock_daily").upsert(recs, on_conflict="code,dt").execute()
+        saved += len(recs)
+    print(f"[KR] 개별종목: 조회 {calls}콜 → {saved}행 적재")
+    sb.table("ingest_log").insert(
+        {"source": "krx_stock", "market": "KR", "rows": saved, "status": "ok"}).execute()
+
+
 if __name__ == "__main__":
+    if "--stocks" in sys.argv:             # 개별종목만 (지수 회전율은 건너뜀)
+        rest = [a for a in sys.argv[1:] if a != "--stocks"]
+        s = rest[0] if rest else None
+        run_stocks(date(int(s[:4]), int(s[4:6]), int(s[6:])) if s else None)
+        sys.exit()
     arg = sys.argv[1] if len(sys.argv) > 1 else None
-    run(date(int(arg[:4]), int(arg[4:6]), int(arg[6:])) if arg else None)
+    forced = date(int(arg[:4]), int(arg[4:6]), int(arg[6:])) if arg else None
+    run(forced)
+    run_stocks(forced)                     # 인자 없이 부르면 지수 회전율 + 개별종목 둘 다(크론)

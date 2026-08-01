@@ -1304,10 +1304,31 @@ const VP_WINS = [
 ]
 
 function ProfileSection() {
+  const [mode, setMode] = useState('idx')    // idx = 지수 / stk = 개별종목
   const [code, setCode] = useState('kospi')
   const [win, setWin] = useState(365)
   const [rows, setRows] = useState([])
   const [state, setState] = useState('loading')
+  const [stocks, setStocks] = useState([])
+
+  // 종목 목록은 stock_meta(스크리너와 같은 원자료)에서. 매물대가 있는 종목만 고르진 않는다 —
+  // 없으면 '데이터 준비 중'으로 안내되고, 목록을 두 번 조회하는 것보다 싸다.
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      const { data } = await supabase.from('stock_meta').select('code,name,marcap')
+        .order('marcap', { ascending: false }).limit(30)
+      if (alive && data) setStocks(data.map((r) => ({ code: r.code, name: r.name })))
+    })()
+    return () => { alive = false }
+  }, [])
+
+  const options = mode === 'idx' ? VP_CODES : stocks
+  function switchMode(m) {
+    if (m === mode) return
+    setMode(m)
+    setCode(m === 'idx' ? 'kospi' : (stocks[0]?.code || ''))
+  }
 
   useEffect(() => {
     let alive = true
@@ -1340,7 +1361,11 @@ function ProfileSection() {
         </p>
       </header>
       <div className="seg">
-        {VP_CODES.map((c) => (
+        <button className={mode === 'idx' ? 'on' : ''} onClick={() => switchMode('idx')}>📈 지수</button>
+        <button className={mode === 'stk' ? 'on' : ''} onClick={() => switchMode('stk')}>🏢 개별종목</button>
+      </div>
+      <div className="seg">
+        {options.map((c) => (
           <button key={c.code} className={code === c.code ? 'on' : ''} onClick={() => setCode(c.code)}>
             {c.name}
           </button>
@@ -1423,10 +1448,13 @@ function ProfileMethod() {
         <li><b>소진</b> — 쌓인 물량은 매일 <b>그날 회전율만큼 비례로 손바뀜</b>돼 줄어듭니다
           (Grinblatt&amp;Han 2005). 급등락이 반복되면 회전율이 치솟아 옛 매물이 빨리 소화돼요.</li>
         <li><b>집계 구간</b> — 5년~1개월로 잘라 계산합니다. 짧은 구간 = 최근 진입자의 물량만 본 것.</li>
+        <li><b>개별종목이 더 정확합니다</b> — 종목은 <b>거래대금÷시가총액</b>이 곧 진짜 회전율이라
+          모델이 정의대로 돌아가고, 매물대라는 개념 자체도 합성물인 지수보다 또렷해요.</li>
       </ul>
-      <p className="note">⚠️ <b>한계</b>: 지수는 개별 종목의 합성이라 매물대 개념이 개별주보다 흐릿합니다.
-        회전율은 유통주식수 대신 <b>직전 1년 거래량 합 대비</b>로 근사 · 코스피/코스닥 거래량은 KRX 기준(NXT 미포함) ·
-        일봉이라 장중 가격대 배분은 균등 가정 · 파생/ETF 간접 물량은 안 잡힙니다. <b>정밀 측정이 아니라 구조 파악용</b>이에요.</p>
+      <p className="note">⚠️ <b>한계</b>: 지수는 개별 종목의 합성이라 매물대가 개별주보다 흐릿하고,
+        회전율도 유통주식수 대신 <b>직전 1년 거래량 합 대비</b>로 근사합니다(한국 지수는 KRX 실제 회전율 사용) ·
+        거래량은 KRX 기준(NXT 미포함) · 일봉이라 장중 가격대 배분은 균등 가정 · 파생/ETF 간접 물량은 안 잡힙니다.
+        <b>정밀 측정이 아니라 구조 파악용</b>이에요.</p>
     </section>
   )
 }

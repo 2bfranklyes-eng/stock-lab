@@ -23,8 +23,9 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python ingest.py       # 원천 지표 수집 (미국+한국: 심리·유동성 지표)
       - run: python prices.py        # 대표 지수(us_index/kr_index) → 공개용 price_daily (비교 탭용)
-      - run: python krx.py           # KRX 실제 회전율(거래대금÷시총) → indicator_raw (증분)
-      - run: python profile.py --push  # 지수 매물대(미소화 물량 추정) → volume_profile (매물대 탭용)
+      - run: python krx.py           # KRX 실제 회전율 + 워치리스트 종목 일별시세 (증분)
+      - run: python profile.py --push    # 지수 매물대 → volume_profile (매물대 탭용)
+      - run: python profile.py --stocks  # 개별종목 매물대 → volume_profile
       - run: python sentiment.py     # S(t) 심리점수 계산 → sentiment_daily
       - run: python liquidity.py     # L(t) 유동성 지수 계산 → liquidity_daily
       - run: python inflation.py     # I(t) 물가 지수 계산 → inflation_daily

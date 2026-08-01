@@ -11,6 +11,8 @@
 #   (pykrx 거래대금·시가총액은 KRX 로그인 필요라 보류 — KRX_ID/PW 확보 시 실제 회전율로 교체 가능)
 #   사용: python profile.py kospi kosdaq          → 콘솔 요약 + PNG
 #         python profile.py --push                → 전 지수 계산 → Supabase volume_profile (크론용)
+#         python profile.py --stocks              → 워치리스트 개별종목 → volume_profile (크론용)
+#         python profile.py --stocks 005930       → 특정 종목만
 import sys
 import numpy as np
 import pandas as pd
@@ -36,25 +38,43 @@ def turnover(df):
     return v.fillna(v.median()).to_numpy()
 
 
+_SB = None
+
+
+def client():
+    """Supabase 클라이언트(지연 생성) — 로컬 PNG 용도로는 안 쓰이므로 임포트도 미룬다."""
+    global _SB
+    if _SB is None:
+        import os
+        from dotenv import load_dotenv
+        from supabase import create_client
+        load_dotenv()
+        _SB = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
+    return _SB
+
+
+def page(table, sel, **eq):
+    """Supabase는 요청당 1000행 상한 — dt 순으로 이어 받는다."""
+    rows, start = [], 0
+    while True:
+        q = client().table(table).select(sel)
+        for k, v in eq.items():
+            q = q.eq(k, v)
+        r = q.order("dt").range(start, start + 999).execute().data
+        rows += r
+        if len(r) < 1000:
+            break
+        start += 1000
+    return rows
+
+
 def real_turnover(df, code):
     """KRX 실제 회전율을 날짜로 맞춰 얹는다. 없는 날(수집 전 구간·최신일)은 프록시로 메움.
     Supabase 접근 불가(키 없음 등)면 조용히 프록시 전체를 반환 — 로컬 PNG 용도 대비."""
     proxy = turnover(df)
     try:
-        import os
-        from dotenv import load_dotenv
-        from supabase import create_client
-        load_dotenv()
-        sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
-        rows, start = [], 0
-        while True:
-            r = sb.table("indicator_raw").select("dt,value").eq("market", "KR") \
-                  .eq("code", code).order("dt").range(start, start + 999).execute().data
-            rows += r
-            if len(r) < 1000:
-                break
-            start += 1000
-        got = {x["dt"]: float(x["value"]) for x in rows}
+        got = {x["dt"]: float(x["value"])
+               for x in page("indicator_raw", "dt,value", market="KR", code=code)}
     except Exception as e:
         print(f"  (실제 회전율 조회 실패 — 프록시 사용: {e})")
         return proxy
@@ -68,14 +88,15 @@ def real_turnover(df, code):
     return v
 
 
-def build(df, nbins, V):
-    """일봉 OHLCV + 회전율 → (구간 경계, 미소화 추정 프로파일, 일별 '두께' 지표)."""
+def build(df, nbins, V, wcol="Volume"):
+    """일봉 OHLCV + 회전율 → (구간 경계, 미소화 추정 프로파일, 일별 '두께' 지표).
+    wcol = 가격대에 뿌릴 가중치 컬럼. 지수는 거래량, 개별종목은 거래대금(저가주 왜곡 없음)."""
     lo, hi = df["Low"].min(), df["High"].max()
     edges = np.linspace(lo, hi, nbins + 1)
     bin_lo, bin_hi = edges[:-1], edges[1:]
 
     vb_days = []                             # 하루 거래량을 고가~저가와 겹치는 구간에 배분
-    for l, h, v in zip(df["Low"], df["High"], df["Volume"]):
+    for l, h, v in zip(df["Low"], df["High"], df[wcol]):
         if v <= 0:
             vb_days.append(None)
             continue
@@ -150,59 +171,160 @@ def draw(key, name, df, px, results):
     print(f"  저장: profile_{key}.png")
 
 
-def run(key, push_rows=None):
-    sym, name = PRESETS[key]
-    df = yf.Ticker(sym).history(period="5y", auto_adjust=True)
-    df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
-    zero = (df["Volume"] <= 0).mean()
-    if zero > .2:
-        print(f"[경고] {name}: 거래량 0인 날이 {zero*100:.0f}% — 프로파일 신뢰도 낮음")
-    V = real_turnover(df, REAL_TURN[key]) if key in REAL_TURN else turnover(df)
-    px = float(df["Close"].iloc[-1])
-    last_dt = df.index[-1].strftime("%Y-%m-%d")
-    print(f"\n=== {name} — 현재가 {px:,.0f} ({last_dt}) ===")
-
-    results = []
+def analyze(df, V, px, wcol="Volume"):
+    """구간별로 프로파일을 계산하고 콘솔 요약까지. → [(label, days, edges, rem)]"""
+    results, thin5, df5 = [], None, None
     for label, days in WINDOWS:
-        cut = df.index[-1] - pd.Timedelta(days=days)
-        mask = df.index >= cut
+        mask = df.index >= df.index[-1] - pd.Timedelta(days=days)
         sub = df[mask]
         if len(sub) < 15:
             continue
         nbins = min(90, max(15, len(sub) // 3))   # 짧은 구간은 구간 수도 줄여 과분해 방지
-        edges, rem, thin = build(sub, nbins, V[mask])
+        edges, rem, thin = build(sub, nbins, V[mask], wcol)
         window_summary(label, edges, rem, px)
         results.append((label, days, edges, rem))
         if label == "5년":
             thin5, df5 = thin, sub
-    hypothesis_check(df5, thin5)
+    if df5 is not None:
+        hypothesis_check(df5, thin5)
+    return results
 
+
+def to_rows(code, results, px, last_dt):
+    out = []
+    for _label, days, edges, rem in results:
+        pct = rem / max(rem.sum(), 1e-9) * 100
+        out += [{"code": code, "win_days": days,
+                 "bin_lo": round(float(edges[b]), 4), "bin_hi": round(float(edges[b + 1]), 4),
+                 "share": round(float(pct[b]), 4), "px": px, "dt": last_dt}
+                for b in range(len(rem))]
+    return out
+
+
+def krx_index(key):
+    """KRX 지수 일별시세(krx.py가 stock_daily에 code=kospi/kosdaq로 적재). 부족하면 None.
+    야후보다 하루 최신이고 거래'대금'이 있어 저가주 왜곡 없는 가중치를 쓸 수 있다."""
+    try:
+        rows = page("stock_daily", "dt,high,low,close,tval,mktcap", code=key)
+    except Exception:
+        return None
+    if len(rows) < 200:
+        return None
+    df = pd.DataFrame(rows)
+    df["dt"] = pd.to_datetime(df["dt"])
+    df = df.set_index("dt").astype(float).dropna(subset=["high", "low", "close", "tval", "mktcap"])
+    df = df[(df["close"] > 0) & (df["high"] > 0) & (df["mktcap"] > 0)]
+    return df.rename(columns={"high": "High", "low": "Low", "close": "Close"})
+
+
+def run(key, push_rows=None):
+    sym, name = PRESETS[key]
+    df = krx_index(key) if key in REAL_TURN else None
+    if df is not None:                       # KRX 직통(한국) — 가격·거래대금·시총이 한 소스
+        wcol = "tval"
+        V = np.clip(df["tval"] / df["mktcap"], 0, 0.2).to_numpy()
+        src = f"KRX 지수 일별시세 {len(df)}일 · 가중치=거래대금 · 실제 회전율"
+    else:                                    # 야후(미국, 또는 KRX 적재 전)
+        wcol = "Volume"
+        src = None
+        df = yf.Ticker(sym).history(period="5y", auto_adjust=True)
+        df = df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+        zero = (df["Volume"] <= 0).mean()
+        if zero > .2:
+            print(f"[경고] {name}: 거래량 0인 날이 {zero*100:.0f}% — 프로파일 신뢰도 낮음")
+        V = real_turnover(df, REAL_TURN[key]) if key in REAL_TURN else turnover(df)
+    px = float(df["Close"].iloc[-1])
+    last_dt = df.index[-1].strftime("%Y-%m-%d")
+    print(f"\n=== {name} — 현재가 {px:,.0f} ({last_dt}) ===")
+    if src:
+        print(f"  (소스: {src})")
+    results = analyze(df, V, px, wcol)
     if push_rows is None:
         draw(key, name, df, px, results)
     else:
-        for _label, days, edges, rem in results:
-            pct = rem / max(rem.sum(), 1e-9) * 100
-            push_rows += [{"code": key, "win_days": days,
-                           "bin_lo": round(float(edges[b]), 4), "bin_hi": round(float(edges[b + 1]), 4),
-                           "share": round(float(pct[b]), 4), "px": px, "dt": last_dt}
-                          for b in range(len(rem))]
+        push_rows += to_rows(key, results, px, last_dt)
+
+
+# ── 개별종목 ──────────────────────────────────────────────────────────────
+# 지수와 달리 종목은 '거래대금 ÷ 시가총액'이 G&H의 진짜 회전율(거래량÷유통주식수)과 같아
+# 모델이 근사가 아니라 정의대로 돌아간다. 원자료는 krx.py가 stock_daily에 적재.
+
+def split_adjust(df):
+    """주식수 변경(액면분할·병합·인적분할) 보정. 상장주식수가 급변한 날 주가가 그 역수만큼
+    움직였으면(=시총 연속) 분할류로 보고 이전 구간 가격에 배율을 적용한다.
+    유상증자는 시총이 함께 늘어 주가가 안 꺾이므로 걸리지 않는다. → (배율, 이벤트 목록)"""
+    sh, px = df["shares"].to_numpy(), df["close"].to_numpy()
+    factor, events = np.ones(len(df)), []
+    for i in range(1, len(df)):
+        if sh[i - 1] <= 0 or sh[i] <= 0 or px[i - 1] <= 0:
+            continue
+        r = sh[i] / sh[i - 1]
+        if (r > 1.5 or r < 0.67) and abs(px[i] / px[i - 1] * r - 1) < 0.25:
+            factor[:i] /= r
+            events.append(f"{df.index[i].date()} 주식수 ×{r:.3g} "
+                          f"({'분할' if r > 1 else '병합·인적분할'}) → 이전 가격 ×{1 / r:.3g}")
+    return factor, events
+
+
+def run_stock(code, name, push_rows):
+    rows = page("stock_daily", "dt,high,low,close,tval,shares,mktcap", code=code)
+    if len(rows) < 60:
+        print(f"\n=== {name}({code}) — 데이터 {len(rows)}행뿐, 건너뜀 ===")
+        return
+    df = pd.DataFrame(rows)
+    df["dt"] = pd.to_datetime(df["dt"])
+    df = df.set_index("dt").astype(float)
+    df = df[(df["close"] > 0) & (df["high"] > 0) & (df["mktcap"] > 0)]
+    f, events = split_adjust(df)
+    for c in ("high", "low", "close"):        # 분할 보정된 가격으로 프로파일을 그린다
+        df[c] = df[c] * f
+    df = df.rename(columns={"high": "High", "low": "Low", "close": "Close"})
+    V = np.clip(df["tval"] / df["mktcap"], 0, 0.5).to_numpy()   # 진짜 회전율
+    px = float(df["Close"].iloc[-1])
+    last_dt = df.index[-1].strftime("%Y-%m-%d")
+    print(f"\n=== {name}({code}) — 현재가 {px:,.0f} ({last_dt}) · 회전율 중앙값 {np.median(V)*100:.2f}%/일 ===")
+    for e in events:                          # 헤더 뒤에 찍어야 어느 종목 것인지 헷갈리지 않는다
+        print(f"  (주가 보정: {e})")
+    results = analyze(df, V, px, wcol="tval")
+    push_rows += to_rows(code, results, px, last_dt)
+
+
+def stock_list():
+    """워치리스트 — krx.py와 같은 기준(stock_meta 시총 상위 N + 지정 종목)."""
+    import os
+    n = int(os.environ.get("VP_STOCK_N", "30"))
+    always = [c.strip() for c in os.environ.get("SCREENER_ALWAYS", "").split(",") if c.strip()]
+    rows = client().table("stock_meta").select("code,name,marcap") \
+                   .order("marcap", desc=True).limit(n).execute().data or []
+    have = {r["code"] for r in rows}
+    if [c for c in always if c not in have]:
+        rows += client().table("stock_meta").select("code,name") \
+                        .in_("code", [c for c in always if c not in have]).execute().data or []
+    return [(r["code"], r["name"]) for r in rows]
+
+
+def push(rows, codes):
+    sb = client()
+    for c in codes:                          # 전량 교체(구간 경계가 매일 달라져 upsert로는 잔재가 남음)
+        sb.table("volume_profile").delete().eq("code", c).execute()
+    for i in range(0, len(rows), 1000):
+        sb.table("volume_profile").insert(rows[i:i + 1000]).execute()
+    print(f"\nvolume_profile 적재 완료: {len(rows)}행 / {len(codes)}종목")
 
 
 if __name__ == "__main__":
-    push = "--push" in sys.argv
-    keys = [a.lower() for a in sys.argv[1:] if not a.startswith("--")] \
-        or (list(PRESETS) if push else ["kospi"])
-    rows = [] if push else None
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if "--stocks" in sys.argv:                # 개별종목 (항상 Supabase 적재 — 로컬 PNG 없음)
+        targets = [(c, c) for c in args] or stock_list()
+        rows = []
+        for code, name in targets:
+            run_stock(code, name, rows)
+        push(rows, [c for c, _ in targets])
+        sys.exit()
+    do_push = "--push" in sys.argv
+    keys = [a.lower() for a in args] or (list(PRESETS) if do_push else ["kospi"])
+    rows = [] if do_push else None
     for k in keys:
         run(k, rows)
-    if push:
-        import os
-        from dotenv import load_dotenv
-        from supabase import create_client
-        load_dotenv()
-        sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
-        for k in keys:                       # 전량 교체(구간 경계가 매일 달라져 upsert로는 잔재가 남음)
-            sb.table("volume_profile").delete().eq("code", k).execute()
-        for i in range(0, len(rows), 1000):
-            sb.table("volume_profile").insert(rows[i:i + 1000]).execute()
-        print(f"\nvolume_profile 적재 완료: {len(rows)}행 ({', '.join(keys)})")
+    if do_push:
+        push(rows, keys)
