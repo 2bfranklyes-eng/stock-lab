@@ -323,7 +323,12 @@ def push(rows, codes):
 if __name__ == "__main__":
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     if "--stocks" in sys.argv:                # 개별종목 (항상 Supabase 적재 — 로컬 PNG 없음)
-        targets = [(c, c) for c in args] or stock_list()
+        if args:                              # 지정 실행도 이름은 stock_meta에서 찾아 표시
+            got = {r["code"]: r["name"] for r in client().table("stock_meta")
+                   .select("code,name").in_("code", args).execute().data or []}
+            targets = [(c, got.get(c, c)) for c in args]
+        else:
+            targets = stock_list()
         rows = []
         for code, name in targets:
             run_stock(code, name, rows)

@@ -71,15 +71,19 @@ def holdings_profile(vol, lows, highs, edges):
 
 def avg_cost(vol, val):
     """주체별 이동평균 매입단가 — 순매수일엔 평단을 갱신하고, 순매도일엔 수량만 줄인다.
-    (매도는 평단을 바꾸지 않는 평균원가법. 포지션이 음수로 가면 그 주체는 순매도자다.)"""
+    (매도는 평단을 바꾸지 않는 평균원가법. 포지션이 음수로 가면 그 주체는 순매도자다.)
+    수량은 +인데 대금이 −인 날(장중 싸게 사고 비싸게 판 날)은 단가를 알 수 없으므로
+    수량만 더하고 평단은 안 건드린다 — 음수 단가가 평균에 섞이는 오염 방지."""
     out = {}
     for t in TYPES:
         pos = cost = 0.0
         for nv, nval in zip(vol[t], val[t]):
-            if nv > 0:
+            if nv > 0 and nval > 0:
                 px = nval / nv                       # 그날 그 주체의 실제 순매수 평균가
                 cost = (pos * cost + nv * px) / (pos + nv)
                 pos += nv
+            elif nv > 0:
+                pos += nv                            # 단가 불명 — 평단 유지
             else:
                 pos += nv                            # 음수 더하기 = 감소
                 if pos <= 0:
