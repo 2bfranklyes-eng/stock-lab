@@ -36,7 +36,10 @@ JOBS = {
            "hyg": "HYG", "iei": "IEI",
            "tip": "TIP", "ief": "IEF", "uso": "USO", "dbc": "DBC", "dbb": "DBB",
            "wti": "CL=F", "copper": "HG=F", "gsci": "^SPGSCI",
-           "corn": "ZC=F", "wheat": "ZW=F", "soy": "ZS=F"},
+           "corn": "ZC=F", "wheat": "ZW=F", "soy": "ZS=F",
+           # ↓ 자산배분(allocation.py)용. 금·은은 선물이 ETF보다 이력이 길다(2000~, GLD는 2004~).
+           #   은은 자산 카드가 아니라 금/은 비율(금 밸류에이션 렌즈)의 재료로만 쓴다.
+           "gold": "GC=F", "silver": "SI=F", "btc": "BTC-USD"},
     "KR": {"kr_index": "^KS11", "kr_bond": "148070.KS", "kr_kosdaq": "^KQ11",
            "usdkrw": "USDKRW=X"},
 }
@@ -76,6 +79,9 @@ YF_META = {
     "kr_bond": ("국고채10년 ETF (KOSEF)", "가격", "price"),
     "kr_kosdaq": ("코스닥", "가격", "greed"),
     "usdkrw": ("원/달러", "유동성", "fx"),
+    "gold": ("금 선물($/온스)", "자산", "asset"),
+    "silver": ("은 선물($/온스)", "자산", "asset"),
+    "btc": ("비트코인($)", "자산", "asset"),
 }
 
 # ── ECOS(한국은행) 시장금리 일별 — 한국 유동성용 국내 금리 (yfinance엔 없음) ──
@@ -234,10 +240,56 @@ def run_ecos():
     print(f"[KR] ECOS 완료: 총 {total} rows" + (f"  (건너뜀: {', '.join(failed)})" if failed else ""))
 
 
+# ── FRED(세인트루이스 연준) 일별 — 실질금리 (yfinance엔 없음) ──
+# 금 밸류에이션의 제1 렌즈: 금은 이자가 없어 보유의 기회비용이 물가연동국채(TIPS) 실질수익률이다.
+# 채권 카드에도 '실질수익률 수준'으로 쓴다. fuel.py의 fred()와 같은 API지만 그쪽은 주간 유동성용
+# 자기완결 스크립트라 여기 일별 지표 수집과는 결이 달라 최소 구현을 따로 둔다.
+FRED_KEY = os.environ.get("FRED_API_KEY", "").strip()
+FRED_ITEMS = {                    # code → (FRED series id, 메타 name)
+    "us_real10y": ("DFII10", "미 10년 실질금리(TIPS)"),
+}
+
+
+def run_fred():
+    if not FRED_KEY:
+        print("[US] FRED_API_KEY 없음 — 실질금리 수집 건너뜀 (금·채권 자산 카드의 앵커 계산 불가)")
+        return
+    rows_meta = [{"code": c, "name": n, "market": "US", "category": "자산",
+                  "role": "rate", "source": f"fred:{sid}"}
+                 for c, (sid, n) in FRED_ITEMS.items()]
+    sb.table("indicator_meta").upsert(rows_meta, on_conflict="code").execute()
+    total, failed = 0, []
+    for code, (sid, _name) in FRED_ITEMS.items():
+        url = (f"https://api.stlouisfed.org/fred/series/observations?series_id={sid}"
+               f"&api_key={FRED_KEY}&file_type=json&observation_start=2015-01-01")
+        try:
+            with urllib.request.urlopen(url, timeout=30) as r:
+                obs = json.loads(r.read().decode("utf-8")).get("observations", [])
+        except Exception as e:
+            failed.append(code)
+            print(f"  [US] {code} ({sid}): 오류 — {e}")
+            continue
+        rows = [{"market": "US", "dt": o["date"], "code": code, "value": float(o["value"])}
+                for o in obs if o.get("value") not in ("", ".")]   # FRED 결측은 "."
+        if not rows:
+            failed.append(code)
+            print(f"  [US] {code} ({sid}): 데이터 없음 — 건너뜀")
+            continue
+        upsert(rows)
+        total += len(rows)
+        print(f"  [US] {code} ({sid}): {len(rows)} rows")
+    sb.table("ingest_log").insert(
+        {"source": "fred", "market": "US", "rows": total,
+         "status": "ok" if not failed else "partial"}).execute()
+    print(f"[US] FRED 완료: 총 {total} rows" + (f"  (건너뜀: {', '.join(failed)})" if failed else ""))
+
+
 if __name__ == "__main__":
     # 인자 없으면 미국+한국 둘 다 (크론이 인자 없이 호출). `python ingest.py KR` 로 개별 실행도 가능.
     markets = [a.upper() for a in sys.argv[1:]] or ["US", "KR"]
     for m in markets:
         run(m)
+    if "US" in markets:                            # 미국 실질금리(FRED)는 yfinance 뒤에 별도 수집
+        run_fred()
     if "KR" in markets:                            # 한국 국내 금리(ECOS)는 yfinance 뒤에 별도 수집
         run_ecos()
