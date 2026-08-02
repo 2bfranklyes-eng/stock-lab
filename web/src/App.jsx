@@ -1448,6 +1448,31 @@ function ProfileSection() {
     return () => { alive = false }
   }, [code, win])
 
+  // 주체별 실측(holder_profile)은 개별종목만, 91~730일 창만 있다 — 창을 그 범위로 눌러 조회.
+  // 여기(부모)서 받아야 모델 차트(겹침용)와 아래 카드 섹션이 같은 데이터를 나눠 쓴다.
+  const hwin = Math.min(Math.max(win, 91), HP_MAX_WIN)
+  const [hrows, setHrows] = useState([])
+  const [hstate, setHstate] = useState('loading')
+  useEffect(() => {
+    if (mode !== 'stk' || !code) return
+    let alive = true
+    ;(async () => {
+      setHstate('loading')
+      try {
+        const { data, error } = await supabase.from('holder_profile').select('*')
+          .eq('code', code).eq('win_days', hwin)
+          .order('bin_lo', { ascending: false })   // 위(고가) → 아래(저가), 모델 차트와 동일
+        if (error) throw error
+        if (!alive) return
+        if (!data || !data.length) { setHstate('empty'); return }
+        setHrows(data); setHstate('ok')
+      } catch {
+        if (alive) setHstate('error')
+      }
+    })()
+    return () => { alive = false }
+  }, [mode, code, hwin])
+
   return (
     <>
       <header>
@@ -1495,8 +1520,15 @@ function ProfileSection() {
           <span>다음 자동 갱신(평일 아침 7시) 후에 채워져요</span>
         </div>
       )}
-      {state === 'ok' && <ProfileBody rows={rows} series={series} />}
-      {mode === 'stk' && code && <HolderSection code={code} win={win} />}
+      {/* 주체별 실측은 창이 정확히 일치할 때만 겹친다 — 5년/3년(모델만)과 2년(실측 최대)을 섞으면
+          '5년 매물 위에 2년 순매수'라는 다른 기간이 한 그림이 돼 오독을 부른다 */}
+      {state === 'ok' && (
+        <ProfileBody rows={rows} series={series}
+          holder={mode === 'stk' && win === hwin && hstate === 'ok' ? hrows : null} />
+      )}
+      {mode === 'stk' && code && (
+        <HolderSection rows={hrows} state={hstate} win={win} hwin={hwin} />
+      )}
       <ProfileMethod />
     </>
   )
@@ -1599,8 +1631,33 @@ function PriceLine({ series, lo, hi, height }) {
   )
 }
 
-function ProfileBody({ rows, series }) {
+// 주체별 실측을 모델 격자에 얹는다 — 가격 겹침 비례로 재배분(holders.py day_spread와 같은 논리).
+// 1년·2년 창은 두 격자가 애초에 같아(둘 다 60구간, 같은 lo/hi) 사실상 1:1 복사가 되고,
+// 6개월(모델 40구간)·3개월(20구간)만 실제로 재배분이 일어난다.
+function rebinHolder(hRows, modelRows) {
+  if (!hRows?.length || !modelRows?.length) return null
+  const bins = modelRows.map(() => ({ total: 0, by: {} }))
+  for (const r of hRows) {
+    const q = r.qty || 0
+    const span = r.bin_hi - r.bin_lo
+    if (q <= 0 || span <= 0) continue
+    for (let i = 0; i < modelRows.length; i++) {
+      const ov = Math.min(r.bin_hi, modelRows[i].bin_hi) - Math.max(r.bin_lo, modelRows[i].bin_lo)
+      if (ov <= 0) continue
+      const add = q * (ov / span)
+      bins[i].by[r.inv] = (bins[i].by[r.inv] || 0) + add
+      bins[i].total += add
+    }
+  }
+  const max = Math.max(...bins.map((b) => b.total))
+  return max > 0 ? { bins, max } : null
+}
+
+function ProfileBody({ rows, series, holder }) {
   const [hover, setHover] = useState(null)
+  // 주체별 겹침층 — 모델과 단위가 달라(전체 손바뀜 추정 vs 순매수 실측) 각자 최대값 기준으로
+  // 정규화한다. 두 막대의 길이를 서로 비교하는 건 무의미하다 — 위치(어느 가격대인가)만 비교 대상.
+  const hb = useMemo(() => rebinHolder(holder, rows), [holder, rows])
   const px = rows[0].px
   const dt = rows[0].dt
   const daily = rows[0].daily_qty          // 최근 20일 평균 거래량(주)
@@ -1673,10 +1730,20 @@ function ProfileBody({ rows, series }) {
                 onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}
                 onClick={() => setHover(hover === i ? null : i)}>
                 <span className="vp-price">{i % step === 0 ? fmt(r.bin_lo) : ''}</span>
-                <div className="vp-bar" style={{
-                  width: `${Math.max(0.5, r.share / max * 100)}%`,
-                  background: mid(r) > px ? '#c0392b' : '#2471a3',
-                }} />
+                {/* 래퍼가 있어야 주체별 스택을 모델 막대와 같은 왼쪽 끝에서 겹칠 수 있다 */}
+                <div className="vp-barwrap">
+                  <div className="vp-bar" style={{
+                    width: `${Math.max(0.5, r.share / max * 100)}%`,
+                    background: mid(r) > px ? '#c0392b' : '#2471a3',
+                  }} />
+                  {hb && hb.bins[i].total > 0 && (
+                    <div className="vp-hstack" style={{ width: `${hb.bins[i].total / hb.max * 100}%` }}>
+                      {HP_TYPES.map((t) => (hb.bins[i].by[t.key] || 0) > 0 && (
+                        <i key={t.key} style={{ flex: hb.bins[i].by[t.key], background: t.color }} />
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             ))}
             {/* 주가선은 막대 위에 겹친다. 커서 판정은 막대가 받아야 하므로 pointer-events는 꺼둔다 */}
@@ -1688,8 +1755,14 @@ function ProfileBody({ rows, series }) {
               <span>현재가 {fmt(px)}</span>
             </div>
           </div>
-          {series.length > 1 && (
+          {(series.length > 1 || hb) && (
             <div className="vp-chart-cap">
+              {hb && (
+                <span className="hp-legend">
+                  <span className="hp-legend-cap">굵은 옅은 막대=모델(전체) · 가는 막대=주체별 실측:</span>
+                  {HP_TYPES.map((t) => <span key={t.key}><i style={{ background: t.color }} />{t.label}</span>)}
+                </span>
+              )}
               {lastRef != null && (
                 <span className="vp-ref-cap">
                   <i>┄</i> 매물대 평균 {fmt(lastRef)}
@@ -1697,7 +1770,7 @@ function ProfileBody({ rows, series }) {
                   {(px / lastRef * 100 - 100).toFixed(1)}%)
                 </span>
               )}
-              {series[0].dt} ~ {series[series.length - 1].dt}
+              {series.length > 1 && <>{series[0].dt} ~ {series[series.length - 1].dt}</>}
             </div>
           )}
         </div>
@@ -1709,6 +1782,9 @@ function ProfileBody({ rows, series }) {
             {daily > 0 && (
               <em>현재가↔여기 {qtyFmt(pathQty(hover))} = <b>{(pathQty(hover) / daily).toFixed(1)}일치</b></em>
             )}
+            {hb && hb.bins[hover].total > 0 && HP_TYPES.map((t) => (hb.bins[hover].by[t.key] || 0) > 0 && (
+              <em key={t.key} style={{ color: t.color }}>{t.label} {qtyFmt(hb.bins[hover].by[t.key])}</em>
+            ))}
           </div>
         )}
         <p className="note">
@@ -1721,6 +1797,13 @@ function ProfileBody({ rows, series }) {
           <b style={{ color: '#2471a3' }}>파랑</b> = 아래(하락 시 받치는 손바뀜 물량) ·
           막대 길이 = 잔존 물량(최대=1). 막대가 짧은 곳은 <b>진공 구간</b> — 가격이 빠르게 지나가기 쉬워요.
           <b> 막대를 누르거나 커서를 올리면</b> 거기까지 가는 데 며칠치 거래량이 필요한지 나옵니다.
+          {hb && (
+            <>
+              {' '}<b>가는 색 막대는 주체별 실측</b>(KRX 순매수 누적 — 아래 카드 참고) —
+              옅은 막대와 <b>단위가 달라 길이는 서로 비교하면 안 되고</b>, 각자 자기 최대값 기준입니다.
+              같은 높이에 둘 다 길면 "모델도 실측도 여기가 매물 밀집"이라는 <b>교차 확인</b>이 돼요.
+            </>
+          )}
         </p>
       </section>
     </>
@@ -1768,51 +1851,16 @@ const HP_TYPES = [
 ]
 const HP_MAX_WIN = 730             // holders.py 백필 한도 — 실측은 최대 2년
 
-function HolderSection({ code, win }) {
-  const hwin = Math.min(win, HP_MAX_WIN)
-  const [rows, setRows] = useState([])
-  const [state, setState] = useState('loading')
-  const [hover, setHover] = useState(null)
-
-  useEffect(() => {
-    let alive = true
-    ;(async () => {
-      setState('loading')
-      setHover(null)
-      try {
-        const { data, error } = await supabase.from('holder_profile').select('*')
-          .eq('code', code).eq('win_days', hwin)
-          .order('bin_lo', { ascending: false })   // 위(고가) → 아래(저가), 모델 차트와 동일
-        if (error) throw error
-        if (!alive) return
-        if (!data || !data.length) { setState('empty'); return }
-        setRows(data); setState('ok')
-      } catch {
-        if (alive) setState('error')
-      }
-    })()
-    return () => { alive = false }
-  }, [code, hwin])
-
-  // 4주체 행을 가격 구간별로 합친다. rows는 bin_lo 내림차순이라 Map 삽입 순서가 곧 그리는 순서.
-  const bins = useMemo(() => {
-    const m = new Map()
-    for (const r of rows) {
-      if (!m.has(r.bin_lo)) m.set(r.bin_lo, { bin_lo: r.bin_lo, bin_hi: r.bin_hi, total: 0, by: {}, qtyBy: {} })
-      const b = m.get(r.bin_lo)
-      b.by[r.inv] = (b.by[r.inv] || 0) + r.share
-      b.qtyBy[r.inv] = (b.qtyBy[r.inv] || 0) + (r.qty || 0)
-      b.total += r.share
-    }
-    return [...m.values()]
-  }, [rows])
-
+// 데이터는 부모(ProfileSection)가 받아 내려준다 — 위 매물대 차트의 겹침층과 이 카드 섹션이
+// 같은 조회를 나눠 쓰기 위해서다. 여기는 주체별 카드(잔량·평단·기간순매수)와 해설만 남는다.
+// (차트는 위 매물대에 겹쳐 그려지므로 이 섹션의 자체 차트는 없앴다 — 같은 가격축 그림 두 개는 중복)
+function HolderSection({ rows, state, win, hwin }) {
   if (state === 'empty') {
     return (
       <section className="card">
         <h2>🧾 누가 어디서 샀나 (주체별 순매수 누적)</h2>
-        <p className="note">이 종목은 아직 주체별 순매수를 수집하지 않아요 — <b>시총 상위 50 + 관심종목만</b>
-          {' '}매일 수집합니다. (KRX 투자자별 순매수 기반이라 종목마다 스크래핑이 필요해서 범위를 좁혔어요)</p>
+        <p className="note">이 종목은 아직 주체별 순매수를 수집하지 않아요 — <b>시총 상위 200 + 관심종목만</b>
+          {' '}매일 수집합니다. (종목당 2년치를 쌓아야 해서 저장 용량 안에서 범위를 정했어요)</p>
       </section>
     )
   }
@@ -1827,10 +1875,7 @@ function HolderSection({ code, win }) {
 
   const px = rows[0].px
   const dt = rows[0].dt
-  const max = Math.max(...bins.map((b) => b.total), 1e-9)
   const fmt = (v) => Math.round(v).toLocaleString()
-  const step = Math.max(1, Math.ceil(bins.length / 12))
-  const nowIdx = Math.max(0, bins.findIndex((b) => b.bin_lo <= px))
   // 주체 요약 — pos_qty·net_qty·avg_cost는 그 주체의 모든 행에 같은 값이 실려 있다(조인 없이 그리기용)
   const summary = HP_TYPES.map((t) => {
     const r = rows.find((x) => x.inv === t.key)
@@ -1842,7 +1887,12 @@ function HolderSection({ code, win }) {
     <section className="card">
       <h2>🧾 누가 어디서 샀나 (주체별 순매수 누적 · 최근 {winLabel})</h2>
       {win > HP_MAX_WIN && (
-        <p className="note">순매수 수집은 <b>최대 2년</b>이라, 위에서 더 긴 구간을 골라도 여긴 2년치를 보여드려요.</p>
+        <p className="note">순매수 수집은 <b>최대 2년</b>이라 5년·3년 창에선 위 차트에 겹쳐 그리지
+          않아요(기간이 다른 두 그림이 한 축에 섞이면 오독) — 카드는 2년치 기준입니다.</p>
+      )}
+      {win < 91 && (
+        <p className="note">순매수 집계의 최소 창은 <b>3개월</b>이라, 1개월 창에선 위 차트에 겹쳐
+          그리지 않아요 — 카드는 3개월치 기준입니다.</p>
       )}
       <div className="hp-sum">
         {summary.map((t) => (
@@ -1870,51 +1920,18 @@ function HolderSection({ code, win }) {
         그래서 기간 내내 판 주체는 실제 보유가 커도 여기선 작게 나와요 — 파란 글씨(기간 전체 순매도)가
         그 표시입니다.
       </p>
-      <div className="vp-wrap">
-        <div className="vp-bars">
-          {bins.map((b, i) => (
-            <div key={b.bin_lo} className={'vp-row' + (hover === i ? ' on' : '')}
-              onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}
-              onClick={() => setHover(hover === i ? null : i)}>
-              <span className="vp-price">{i % step === 0 ? fmt(b.bin_lo) : ''}</span>
-              <div className="hp-bar" style={{ width: `${Math.max(0.5, b.total / max * 100)}%` }}>
-                {HP_TYPES.map((t) => (b.by[t.key] || 0) > 0 && (
-                  <i key={t.key} style={{ flex: b.by[t.key], background: t.color }} />
-                ))}
-              </div>
-            </div>
-          ))}
-          <div className="vp-now" style={{ top: `${(nowIdx / bins.length) * 100}%` }}>
-            <span>현재가 {fmt(px)}</span>
-          </div>
-        </div>
-        <div className="vp-chart-cap">
-          <span className="hp-legend">
-            {HP_TYPES.map((t) => <span key={t.key}><i style={{ background: t.color }} />{t.label}</span>)}
-          </span>
-          {dt} 기준
-        </div>
-      </div>
-      {hover != null && bins[hover] && (
-        <div className="vp-tip">
-          <b>{fmt(bins[hover].bin_lo)} ~ {fmt(bins[hover].bin_hi)}</b>
-          <span>({((bins[hover].bin_lo + bins[hover].bin_hi) / 2 / px * 100 - 100).toFixed(1)}%)</span>
-          {HP_TYPES.map((t) => (bins[hover].qtyBy[t.key] || 0) > 0 && (
-            <em key={t.key} style={{ color: t.color }}>{t.label} {qtyFmt(bins[hover].qtyBy[t.key])}</em>
-          ))}
-        </div>
-      )}
       <p className="note">
-        📌 <b>위 매물대와 뭐가 다른가</b> — 위는 전체 거래량을 감쇠 <b>모델</b>로 추정한 것, 이건
-        KRX가 집계한 <b>투자자별 순매수(실측)를 누적</b>한 것입니다. 순매수일엔 그날 가격대에 쌓고,
-        순매도일엔 <b>그 주체 보유분 전체에서 비례로 뺀다고 가정</b>해요 — 비례 가정 자체는 위 모델과
-        같고, 주체별로 나눠 적용한 점이 다릅니다. 막대가 긴 가격대 = 그 주체가 최근에 사서 아직 안 판
-        물량이 몰린 곳(현재가 위면 본전 매도 압력 후보). <b>평단</b>은 잔량의 평균 매입가 —{' '}
+        📌 <b>차트는 위 매물대에 겹쳐져 있어요</b>(가는 색 막대) — 굵은 옅은 막대가 전체 거래량을
+        감쇠 <b>모델</b>로 추정한 것이라면, 가는 막대는 KRX가 집계한 <b>투자자별 순매수(실측)를
+        누적</b>한 것입니다. 순매수일엔 그날 가격대에 쌓고, 순매도일엔 <b>그 주체 보유분 전체에서
+        비례로 뺀다고 가정</b>해요 — 비례 가정 자체는 모델과 같고, 주체별로 나눠 적용한 점이 다릅니다.
+        가는 막대가 긴 가격대 = 그 주체가 최근에 사서 아직 안 판 물량이 몰린 곳(현재가 위면 본전
+        매도 압력 후보). <b>평단</b>은 잔량의 평균 매입가 —{' '}
         <b style={{ color: '#c0392b' }}>빨강이면 이익권</b>,{' '}
         <b style={{ color: '#2471a3' }}>파랑이면 물려 있는 상태</b>예요.{' '}
         <b>주체끼리 잔량 크기를 비교하는 지표는 아닙니다</b>(0 리셋 정도가 주체마다 달라서요 —
         누가 세게 사고팔았나는 카드의 '기간 전체' 줄로 보세요). <b>한계</b>: 최근 {winLabel} 이전부터
-        든 물량 제외 · 같은 주체끼리 손바뀜(개인↔개인)은 안 잡혀요 · KRX 정규장 기준.
+        든 물량 제외 · 같은 주체끼리 손바뀜(개인↔개인)은 안 잡혀요 · KRX 정규장 기준 ({dt}).
       </p>
     </section>
   )

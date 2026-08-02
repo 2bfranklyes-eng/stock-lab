@@ -13,7 +13,7 @@ Supabase(방과후와 별도 프로젝트) + Python 파이프라인 + React 대�
 - `liquidity_backtest.py` — 유동성 밴드별 이후수익률 검증 → `liquidity_backtest_stats`
 - `inflation.py` — I(t) 물가 지수 계산(시장 반영 물가압력) → `inflation_daily`
 - `inflation_backtest.py` — 물가 밴드별 이후수익률 검증 → `inflation_backtest_stats`
-- `holders.py` — 주체별(개인·외국인·기관) 순매수 누적 매물대 → `investor_flow`(캐시)·`holder_profile` (KRX 정보데이터시스템 로그인 필요)
+- `holders.py` — 주체별(개인·외국인·기관) 순매수 누적 매물대 → `investor_flow`(캐시)·`holder_profile` (KRX 정보데이터시스템 로그인 필요). 시총 상위 200 + `SCREENER_ALWAYS`
 - `crossval.py` / `crossval_models.py` — 매물대 모델을 투자자 실측(B)과 대조 검증 (로컬 전용)
 - `sql/` — 테이블 DDL(수동 생성용). 새 테이블 추가 시 여기 SQL을 Supabase SQL Editor에 실행
 - `plot.py` — 로컬 검증용 그래프 (matplotlib)
@@ -64,13 +64,27 @@ python inflation_backtest.py # 물가 밴드별 검증
 - 미국 휴장일에 VIX만 값이 들어오는 "반쪽 행"이 rolling 창을 오염시키므로, `sentiment.py`는 피벗 후 `dropna()`로 5개 지표가 다 있는 날만 사용.
 
 ## 다음 할 일
-- **주체별 실측 매물대 12종목 미수집** — 백필 중 KRX 로그인이 일시 차단돼 남은 분.
-  평일 아침 크론이 알아서 채울 가능성이 높고(캐시 있는 38종목은 증분만), 수동으로 밀려면:
-  ```bash
-  python holders.py 010140 096770 033780 051910 017670 035720 196170 024110 018260 267250 079550 003550
-  ```
-  Actions 로그나 `python holders.py 005930 --dry` 로 로그인 상태부터 확인할 것.
+- **주체별 매물대 신규 종목 백필 진행 중** — 커버리지를 50→200으로 넓혔다. 신규 162종목은
+  KRX 차단을 피하려 실행당 40종목씩만 받으므로(`NEW_PER_RUN`) 평일 크론 4회쯤이면 다 찬다.
+  진행 상황은 실행 끝의 "백필 대기 N종목" 줄로 본다. 급하면 `python holders.py <코드…>` 로 지정 실행.
 - 풋콜/VIX 기간구조 등 심리 성분 정밀화
+
+## 주체별 매물대 커버리지를 더 넓히려면
+상한을 정하는 건 이제 KRX 부하가 아니라 **Supabase 무료 티어(저장 500MB)** 다. 벌크 엔드포인트로 바꾼 뒤
+일일 호출은 종목수와 무관하게 10회지만, 저장은 **종목당 약 410KB**씩 는다(`holder_profile` 960행
++ `investor_flow` 1,976행). 39종목 적재 전후 대시보드가 296MB→312MB로 움직인 걸로 실측한 값이다.
+`investor_flow`는 해마다 종목당 ~120KB씩 더 는다.
+
+2026-08 기준 사용량 312MB(62%) — 이 중 ~50MB는 같은 조직의 방과후 프로젝트 몫이다.
+
+| 커버리지 | 예상 총 사용량 |
+|---|---|
+| 200 (현행, 백필 완료 시) | ~362MB (72%) |
+| 300 | ~403MB (81%) |
+| 500 | ~485MB (97%) ❌ |
+
+**300이 현실적 상한이고 200에서 멈추는 게 안전하다.** 더 가려면 창을 4개→2개로 줄이거나 `NBINS` 를
+낮추는 기능 트레이드오프, 또는 유료 전환이 필요하다. 늘리기 전엔 Supabase → Settings → Usage 재확인.
 
 ## 매물대 모델을 바꾸고 싶다면
 `crossval_models.py` 가 심판대다 — 감쇠 모델(A)을 **투자자 순매수 실측(B)** 과의 분포 상관으로

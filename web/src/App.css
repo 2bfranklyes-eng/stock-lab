@@ -136,6 +136,12 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .vp-row { display: flex; align-items: center; gap: 8px; height: 9px; cursor: crosshair; }
 .vp-row.on .vp-bar { outline: 1px solid #d97706; opacity: 1; }
 .vp-row.on .vp-price { color: #d97706; font-weight: 700; }
+/* 막대 래퍼 — 모델 막대(굵고 옅음)와 주체별 스택(가늘고 진함)을 같은 왼쪽 끝에서 겹친다.
+   %폭이 래퍼 기준으로 풀리므로 두 층의 비례가 왼쪽 정렬로 정확히 맞는다. */
+.vp-barwrap { flex: 1; min-width: 0; position: relative; display: flex; align-items: center; }
+.vp-hstack { position: absolute; left: 0; top: 50%; transform: translateY(-50%);
+  height: 4px; display: flex; border-radius: 2px; overflow: hidden; pointer-events: none; }
+.vp-hstack i { display: block; height: 100%; }
 .vp-tip { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-top: 12px;
   padding: 8px 12px; border-radius: 10px; background: var(--track); font-size: 12px; }
 .vp-tip b { font-size: 13px; }
@@ -159,11 +165,9 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .hp-pos { font-size: 15px; font-weight: 800; }
 .hp-pl { font-size: 11px; font-weight: 600; }
 .hp-net { font-size: 11px; color: #64748b; }
-.hp-bar { display: flex; height: 7px; border-radius: 2px; overflow: hidden; opacity: .8; }
-.hp-bar i { display: block; height: 100%; }
-.vp-row.on .hp-bar { outline: 1px solid #d97706; opacity: 1; }
 .hp-legend { display: flex; gap: 10px; flex-wrap: wrap; margin-right: auto; }
 .hp-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 3px; }
+.hp-legend-cap { color: #64748b; }
 
 /* ── 모바일: 세로로 쌓기 ── */
 @media (max-width: 640px) {
@@ -179,7 +183,7 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   /* 손가락으로는 9px 막대를 정확히 짚기 어렵다 — 매물대 막대만 조금 키운다 */
   .vp-row { height: 12px; }
   .vp-bar { height: 9px; }
-  .hp-bar { height: 9px; }
+  .vp-hstack { height: 5px; }
   .hp-card { flex: 1 1 45%; }
   .vp-price { flex-basis: 48px; }
   /* 막대 시작 x = 가격라벨 폭(48) + .vp-row gap(8). 이 값이 어긋나면 선과 막대가 가로로 밀린다 */
