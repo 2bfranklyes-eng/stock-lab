@@ -158,6 +158,7 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .hp-name { font-size: 11px; font-weight: 700; }
 .hp-pos { font-size: 15px; font-weight: 800; }
 .hp-pl { font-size: 11px; font-weight: 600; }
+.hp-net { font-size: 11px; color: #64748b; }
 .hp-bar { display: flex; height: 7px; border-radius: 2px; overflow: hidden; opacity: .8; }
 .hp-bar i { display: block; height: 100%; }
 .vp-row.on .hp-bar { outline: 1px solid #d97706; opacity: 1; }

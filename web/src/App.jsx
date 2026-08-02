@@ -1754,9 +1754,12 @@ function ProfileMethod() {
   )
 }
 
-// ── 주체별 실측 섹션: holders.py가 적재하는 holder_profile ──
-// 위 매물대가 거래량 감쇠 '모델'의 추정이라면, 이건 KRX 투자자별 순매수의 '실측' 누적이다.
-// 감쇠 가정이 없는 대신 창 구간 순매수만 보이고, 같은 주체 안 손바뀜(개인↔개인)은 안 잡힌다.
+// ── 주체별 순매수 누적 섹션: holders.py가 적재하는 holder_profile ──
+// 위 매물대가 전체 거래량을 감쇠 '모델'로 추정한다면, 이건 KRX 투자자별 순매수(실측)를 누적한다.
+// 다만 순매도일 배분엔 '보유분 전체에서 비례로 판다'는 가정이 남고(모델과 같은 비례 가정을
+// 주체별로 적용), 판 게 산 것보다 많아지면 0에서 다시 센다 — 잔량(pos_qty)은 보유 지분이 아니다.
+// 그래서 카드엔 리셋 없는 net_qty(기간 전체 순매수)를 함께 보여 '1년 내내 판 주체'가
+// '물량 적음'으로 오독되는 일을 막는다(실사용에서 나온 오독 사례).
 const HP_TYPES = [
   { key: '개인', label: '개인', color: '#d97706' },
   { key: '외국인합계', label: '외국인', color: '#2471a3' },
@@ -1807,8 +1810,8 @@ function HolderSection({ code, win }) {
   if (state === 'empty') {
     return (
       <section className="card">
-        <h2>🧾 누가 어디서 샀나 (주체별 실측)</h2>
-        <p className="note">이 종목은 아직 주체별 실측을 수집하지 않아요 — <b>시총 상위 50 + 관심종목만</b>
+        <h2>🧾 누가 어디서 샀나 (주체별 순매수 누적)</h2>
+        <p className="note">이 종목은 아직 주체별 순매수를 수집하지 않아요 — <b>시총 상위 50 + 관심종목만</b>
           {' '}매일 수집합니다. (KRX 투자자별 순매수 기반이라 종목마다 스크래핑이 필요해서 범위를 좁혔어요)</p>
       </section>
     )
@@ -1816,7 +1819,7 @@ function HolderSection({ code, win }) {
   if (state !== 'ok') {
     return (
       <section className="card">
-        <h2>🧾 누가 어디서 샀나 (주체별 실측)</h2>
+        <h2>🧾 누가 어디서 샀나 (주체별 순매수 누적)</h2>
         <div className="col-msg">{state === 'loading' ? '불러오는 중…' : '데이터를 불러오지 못했어요'}</div>
       </section>
     )
@@ -1828,32 +1831,45 @@ function HolderSection({ code, win }) {
   const fmt = (v) => Math.round(v).toLocaleString()
   const step = Math.max(1, Math.ceil(bins.length / 12))
   const nowIdx = Math.max(0, bins.findIndex((b) => b.bin_lo <= px))
-  // 주체 요약 — pos_qty·avg_cost는 그 주체의 모든 행에 같은 값이 실려 있다(조인 없이 그리기용)
+  // 주체 요약 — pos_qty·net_qty·avg_cost는 그 주체의 모든 행에 같은 값이 실려 있다(조인 없이 그리기용)
   const summary = HP_TYPES.map((t) => {
     const r = rows.find((x) => x.inv === t.key)
-    return { ...t, pos: r?.pos_qty || 0, cost: r?.avg_cost }
+    return { ...t, pos: r?.pos_qty || 0, cost: r?.avg_cost, net: r?.net_qty ?? null }
   })
   const winLabel = VP_WINS.find((w) => w.days === hwin)?.label || `${hwin}일`
 
   return (
     <section className="card">
-      <h2>🧾 누가 어디서 샀나 (주체별 실측 · 최근 {winLabel})</h2>
+      <h2>🧾 누가 어디서 샀나 (주체별 순매수 누적 · 최근 {winLabel})</h2>
       {win > HP_MAX_WIN && (
-        <p className="note">실측 수집은 <b>최대 2년</b>이라, 위에서 더 긴 구간을 골라도 여긴 2년치를 보여드려요.</p>
+        <p className="note">순매수 수집은 <b>최대 2년</b>이라, 위에서 더 긴 구간을 골라도 여긴 2년치를 보여드려요.</p>
       )}
       <div className="hp-sum">
         {summary.map((t) => (
           <div key={t.key} className="hp-card" style={{ borderTopColor: t.color }}>
             <span className="hp-name" style={{ color: t.color }}>{t.label}</span>
-            <span className="hp-pos">{t.pos > 0 ? qtyFmt(t.pos) : '창 내 순매도'}</span>
+            <span className="hp-pos">{t.pos > 0 ? qtyFmt(t.pos) : '잔량 없음'}</span>
             {t.pos > 0 && t.cost > 0 && (
               <span className="hp-pl" style={{ color: px >= t.cost ? '#c0392b' : '#2471a3' }}>
                 평단 {fmt(t.cost)} ({px >= t.cost ? '+' : ''}{(px / t.cost * 100 - 100).toFixed(1)}%)
               </span>
             )}
+            {/* 잔량은 0 리셋된 값 — 기간 전체로 팔았는지(순매도), 잔량보다 순증이 훨씬 작은지 함께 보여준다 */}
+            {t.net != null && t.net < 0 && (
+              <span className="hp-net" style={{ color: '#2471a3' }}>기간 전체 {qtyFmt(-t.net)} 순매도</span>
+            )}
+            {t.net != null && t.net >= 0 && t.pos > 0 && t.net < t.pos * 0.8 && (
+              <span className="hp-net">기간 순증은 +{qtyFmt(t.net)}</span>
+            )}
           </div>
         ))}
       </div>
+      <p className="note">
+        ⚠️ <b>보유 지분이 아니에요</b> — 최근 {winLabel} 순매수로 쌓여 <b>아직 안 판 걸로 추정되는
+        잔량</b>입니다. 그 전부터 든 물량은 안 보이고, 판 게 산 것보다 많아지면 0에서 다시 셉니다.
+        그래서 기간 내내 판 주체는 실제 보유가 커도 여기선 작게 나와요 — 파란 글씨(기간 전체 순매도)가
+        그 표시입니다.
+      </p>
       <div className="vp-wrap">
         <div className="vp-bars">
           {bins.map((b, i) => (
@@ -1889,14 +1905,16 @@ function HolderSection({ code, win }) {
         </div>
       )}
       <p className="note">
-        📌 <b>위 매물대와 뭐가 다른가</b> — 위는 거래량을 감쇠 <b>모델</b>로 추정한 것, 이건 KRX가
-        집계한 <b>투자자별 순매수의 실측 누적</b>입니다(감쇠 가정 없음). 순매수일엔 그날 가격대에 쌓고,
-        순매도일엔 그 주체 보유분에서 비례로 뺐어요. 막대가 긴 가격대 = 그 주체들이 사서 아직 안 판
-        물량이 몰린 곳(현재가 위면 본전 매도 압력 후보). <b>평단</b>이{' '}
+        📌 <b>위 매물대와 뭐가 다른가</b> — 위는 전체 거래량을 감쇠 <b>모델</b>로 추정한 것, 이건
+        KRX가 집계한 <b>투자자별 순매수(실측)를 누적</b>한 것입니다. 순매수일엔 그날 가격대에 쌓고,
+        순매도일엔 <b>그 주체 보유분 전체에서 비례로 뺀다고 가정</b>해요 — 비례 가정 자체는 위 모델과
+        같고, 주체별로 나눠 적용한 점이 다릅니다. 막대가 긴 가격대 = 그 주체가 최근에 사서 아직 안 판
+        물량이 몰린 곳(현재가 위면 본전 매도 압력 후보). <b>평단</b>은 잔량의 평균 매입가 —{' '}
         <b style={{ color: '#c0392b' }}>빨강이면 이익권</b>,{' '}
         <b style={{ color: '#2471a3' }}>파랑이면 물려 있는 상태</b>예요.{' '}
-        <b>한계</b>: 최근 {winLabel} 순매수만 보여요(그 전부터 든 물량 제외) · 같은 주체끼리
-        손바뀜(개인↔개인)은 안 잡혀요 · 창 내내 순매도인 주체는 보유 0 · KRX 정규장 기준.
+        <b>주체끼리 잔량 크기를 비교하는 지표는 아닙니다</b>(0 리셋 정도가 주체마다 달라서요 —
+        누가 세게 사고팔았나는 카드의 '기간 전체' 줄로 보세요). <b>한계</b>: 최근 {winLabel} 이전부터
+        든 물량 제외 · 같은 주체끼리 손바뀜(개인↔개인)은 안 잡혀요 · KRX 정규장 기준.
       </p>
     </section>
   )

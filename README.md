@@ -13,7 +13,7 @@ Supabase(방과후와 별도 프로젝트) + Python 파이프라인 + React 대�
 - `liquidity_backtest.py` — 유동성 밴드별 이후수익률 검증 → `liquidity_backtest_stats`
 - `inflation.py` — I(t) 물가 지수 계산(시장 반영 물가압력) → `inflation_daily`
 - `inflation_backtest.py` — 물가 밴드별 이후수익률 검증 → `inflation_backtest_stats`
-- `holders.py` — 주체별(개인·외국인·기관) 실측 매물대 → `investor_flow`(캐시)·`holder_profile` (KRX 정보데이터시스템 로그인 필요)
+- `holders.py` — 주체별(개인·외국인·기관) 순매수 누적 매물대 → `investor_flow`(캐시)·`holder_profile` (KRX 정보데이터시스템 로그인 필요)
 - `crossval.py` / `crossval_models.py` — 매물대 모델을 투자자 실측(B)과 대조 검증 (로컬 전용)
 - `sql/` — 테이블 DDL(수동 생성용). 새 테이블 추가 시 여기 SQL을 Supabase SQL Editor에 실행
 - `plot.py` — 로컬 검증용 그래프 (matplotlib)
