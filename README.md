@@ -31,8 +31,11 @@ cd stock-lab
 
 # 2) 파이썬 준비 + 키 파일(.env) 만들기
 pip install -r requirements.txt
-#   .env.example 을 복사해 .env 로 만들고 SUPABASE_SERVICE_KEY 채우기
-#   (service_role 키 = Supabase → Settings → API. 이 프로젝트 GitHub Secrets 에도 있음)
+#   .env.example 을 복사해 .env 로 만들고 아래를 채우기
+#   · SUPABASE_SERVICE_KEY — service_role 키 = Supabase → Settings → API
+#     (GitHub Secrets 에도 있지만 GitHub은 저장된 값을 다시 안 보여주므로 Supabase에서 복사)
+#   · KRX_ID / KRX_PW — data.krx.co.kr 정보데이터시스템 로그인. holders.py(주체별 실측)에만 필요.
+#     없으면 holders.py가 스스로 건너뛰고 나머지는 정상 동작.
 
 # 3) 웹 준비 + 로컬 dev 키
 cd web
@@ -40,6 +43,9 @@ npm install
 #   web/.env.production 을 복사해 web/.env.local 로 저장하면 로컬 dev도 데이터 뜸
 npm run dev        # http://localhost:5173/
 ```
+
+> 윈도우에서 `python`이 Microsoft Store 안내를 띄우면, 스토어 스텁이 PATH를 가로챈 것입니다.
+> python.org 설치 후 **설정 → 앱 → 앱 실행 별칭**에서 python.exe 별칭을 끄세요.
 
 ## 실행
 ```bash
@@ -58,5 +64,16 @@ python inflation_backtest.py # 물가 밴드별 검증
 - 미국 휴장일에 VIX만 값이 들어오는 "반쪽 행"이 rolling 창을 오염시키므로, `sentiment.py`는 피벗 후 `dropna()`로 5개 지표가 다 있는 날만 사용.
 
 ## 다음 할 일
-- 🇰🇷 한국 시장(pykrx·FinanceDataReader) 추가 → 대시보드 오른쪽 칸 채우기
+- **주체별 실측 매물대 12종목 미수집** — 백필 중 KRX 로그인이 일시 차단돼 남은 분.
+  평일 아침 크론이 알아서 채울 가능성이 높고(캐시 있는 38종목은 증분만), 수동으로 밀려면:
+  ```bash
+  python holders.py 010140 096770 033780 051910 017670 035720 196170 024110 018260 267250 079550 003550
+  ```
+  Actions 로그나 `python holders.py 005930 --dry` 로 로그인 상태부터 확인할 것.
 - 풋콜/VIX 기간구조 등 심리 성분 정밀화
+
+## 매물대 모델을 바꾸고 싶다면
+`crossval_models.py` 가 심판대다 — 감쇠 모델(A)을 **투자자 순매수 실측(B)** 과의 분포 상관으로
+평가한다. An(2016)류 이중속도·V자 확장을 이걸로 검증해 **기각**했고(현행 G&H 단일속도 유지),
+근거 수치는 그 파일 헤더에 있다. 새 아이디어도 여기부터 통과시킬 것.
+⚠️ 모델 내부 진단(두께↔변동성 상관)은 실측과 **반대 방향**을 가리켰다 — 판정 기준으로 쓰지 말 것.
