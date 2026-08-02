@@ -254,6 +254,7 @@ const TAB_GROUPS = [
     { key: 'inf', label: '물가', emoji: '🔥' },
     { key: 'fuel', label: '실탄', emoji: '💰' },
     { key: 'mix', label: '종합', emoji: '🧭' },
+    { key: 'alloc', label: '자산배분', emoji: '⚖️' },  // 종합(주식 타이밍) 다음 — "주식이 아니면 뭐가"
     { key: 'cmp', label: '비교', emoji: '📊' },   // 배경 지수를 주가에 겹쳐 검증하는 뷰라 여기
   ] },
   { key: 'asset', label: '지수·종목', emoji: '📊', tabs: [
@@ -277,6 +278,7 @@ function renderSection(key) {
     case 'fuel': return <FuelSection />
     case 'mix': return <CompositeSection />
     case 'cmp': return <ComparisonSection />
+    case 'alloc': return <AllocationSection />
     case 'vp': return <ProfileSection />
     case 'ai': return <AISection />
     case 'scr': return <ScreenerSection />
@@ -1934,6 +1936,269 @@ function HolderSection({ rows, state, win, hwin }) {
         든 물량 제외 · 같은 주체끼리 손바뀜(개인↔개인)은 안 잡혀요 · KRX 정규장 기준 ({dt}).
       </p>
     </section>
+  )
+}
+
+// ── 자산배분 섹션: allocation.py(regime_daily·asset_daily) + allocation_backtest.py(asset_regime_stats) ──
+// 국면(성장기대×물가) 지도 + 국면별 자산 성적표 + 자산별 위치 점수 카드.
+// 규범: '지금 이렇다/과거에 이랬다'까지만 — 배분 비율·매수신호는 만들지 않는다.
+const QUAD_META = {
+  g_up_i_dn: { label: '성장기대 개선 · 물가압력 낮음', alias: '골디락스', color: '#2471a3',
+    hint: '교과서에선 주식이 편해지는 조합' },
+  g_up_i_up: { label: '성장기대 개선 · 물가압력 높음', alias: '리플레이션', color: '#d97706',
+    hint: '실물·원자재가 주목받는 조합' },
+  g_dn_i_up: { label: '성장기대 악화 · 물가압력 높음', alias: '스태그플레이션 공포', color: '#c0392b',
+    hint: '주식·채권이 함께 어려워지기 쉬운 조합' },
+  g_dn_i_dn: { label: '성장기대 악화 · 물가압력 낮음', alias: '둔화·디스인플레', color: '#7c3aed',
+    hint: '금리 하락 기대가 채권을 받치는 조합' },
+}
+// 자산 카드 정의 — 통계는 원자료(선물·지수) 기준, 실행상품은 참고 표기(집계에 안 씀).
+// anchors: asset_daily의 anchor_a~d를 어떤 라벨·단위로 읽을지 (sql/asset_daily.sql 주석과 짝).
+const ALLOC_ASSETS = [
+  { key: 'gold', name: '금', emoji: '🥇', role: '헤지', unit: '$',
+    products: 'ACE KRX금현물(연금 가능) · KODEX 골드선물(H)',
+    anchors: [['a', '실질금리(기회비용)', (v) => `${v.toFixed(2)}%`],
+              ['b', '실질금리 63일 변화', (v) => `${v >= 0 ? '+' : ''}${Math.round(v)}bp`],
+              ['c', '금/은 비율 위치', (v) => `${Math.round(v)}/100`],
+              ['d', '금/원자재 위치', (v) => `${Math.round(v)}/100`]] },
+  { key: 'us_bond', name: '미 국채 장기', emoji: '🇺🇸', role: '방어', unit: '$',
+    products: 'TLT 직구 · TIGER 미국채10년 류',
+    anchors: [['a', '실질금리(캐리 재료)', (v) => `${v.toFixed(2)}%`],
+              ['b', '실질금리 역사 위치', (v) => `${Math.round(v)}/100`]] },
+  { key: 'kr_bond', name: '한국 국고채', emoji: '🇰🇷', role: '방어', unit: '원',
+    products: 'KOSEF 국고채10년 · 국고채30년 류',
+    anchors: [['a', '국고채10년 금리', (v) => `${v.toFixed(2)}%`],
+              ['b', '금리 역사 위치', (v) => `${Math.round(v)}/100`]] },
+  { key: 'dbc', name: '원자재', emoji: '🛢️', role: '실물', unit: '$',
+    products: '국내 종합 ETF 부재 — 원유·농산물 선물 ETF 또는 DBC 직구',
+    anchors: [] },
+  { key: 'usdkrw', name: '달러(원/달러)', emoji: '💵', role: '헤지', unit: '원',
+    products: 'KODEX 미국달러선물 · 달러 예금/RP',
+    anchors: [['a', '5년 내 위치', (v) => `${Math.round(v)}/100`]] },
+  { key: 'us_index', name: '미국 주식', emoji: '🗽', role: '위험', unit: 'pt',
+    products: 'S&P500 — 이미 주력 무대', anchors: [] },
+  { key: 'kr_index', name: '한국 주식', emoji: '🏢', role: '위험', unit: 'pt',
+    products: '코스피 — 이미 주력 무대', anchors: [] },
+  { key: 'btc', name: '비트코인', emoji: '🪙', role: '위험', unit: '$',
+    products: '국내 거래소 직접(현물 ETF 없음)',
+    badge: '이력 전체(2014~)가 상승기 — 어느 국면이든 평균이 높게 나오니 국면 통계는 걸러 볼 것',
+    anchors: [] },
+]
+
+// 가로 위치 미터: 0~100 위치에 점 하나. 게이지 2개를 나란히 두는 카드용(합성 점수 없음).
+function PosBar({ label, v, lo, hi }) {
+  if (v == null) return null
+  return (
+    <div className="al-meter">
+      <span className="al-mlabel">{label}</span>
+      <div className="al-track"><i style={{ left: `${v}%` }} /></div>
+      <span className="al-mval">{Math.round(v)}</span>
+      <span className="al-mscale">{lo}↔{hi}</span>
+    </div>
+  )
+}
+
+// 사분면 지도: x=성장기대 G, y=물가 I. 최근 60일 궤적 + 현재점.
+function QuadMap({ series }) {
+  if (!series.length) return null
+  const last = series[series.length - 1]
+  const W = 100
+  const x = (g) => (g / 100) * W
+  const y = (i) => W - (i / 100) * W
+  const path = series.map((r, idx) => `${idx ? 'L' : 'M'}${x(r.g_score).toFixed(1)},${y(r.i_score).toFixed(1)}`).join(' ')
+  return (
+    <svg className="al-quad" viewBox={`0 0 ${W} ${W}`} aria-label="국면 사분면 지도">
+      <rect x="0" y="0" width="50" height="50" fill="#d9770614" />
+      <rect x="50" y="0" width="50" height="50" fill="#c0392b14" />
+      <rect x="0" y="50" width="50" height="50" fill="#2471a314" />
+      <rect x="50" y="50" width="50" height="50" fill="#7c3aed14" />
+      <line x1="50" y1="0" x2="50" y2="100" stroke="#94a3b8" strokeWidth=".4" />
+      <line x1="0" y1="50" x2="100" y2="50" stroke="#94a3b8" strokeWidth=".4" />
+      <text x="3" y="6" className="al-qlabel">물가↑·성장기대↓</text>
+      <text x="97" y="6" className="al-qlabel" textAnchor="end">물가↑·성장기대↑</text>
+      <text x="3" y="97" className="al-qlabel">물가↓·성장기대↓</text>
+      <text x="97" y="97" className="al-qlabel" textAnchor="end">물가↓·성장기대↑</text>
+      <path d={path} fill="none" stroke="#64748b" strokeWidth=".8" opacity=".55" />
+      <circle cx={x(last.g_score)} cy={y(last.i_score)} r="2.4"
+        fill={QUAD_META[last.quadrant]?.color || '#333'} stroke="#fff" strokeWidth=".7" />
+    </svg>
+  )
+}
+
+function AllocationSection() {
+  const [state, setState] = useState('loading')
+  const [rg, setRg] = useState([])
+  const [assets, setAssets] = useState([])
+  const [stats, setStats] = useState([])
+  const [h, setH] = useState(20)
+
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      setState('loading')
+      try {
+        const { data: r, error } = await supabase.from('regime_daily').select('*')
+          .eq('market', 'GL').order('dt', { ascending: false }).limit(60)
+        if (error) throw error
+        if (!alive) return
+        if (!r || !r.length) { setState('empty'); return }
+        setRg(r.slice().reverse())
+        // 자산 카드: 최근 3주치에서 자산별 최신 행만 (BTC는 주말도 거래라 날짜가 제각각)
+        const from = new Date(Date.now() - 21 * 86400000).toISOString().slice(0, 10)
+        const { data: a } = await supabase.from('asset_daily').select('*').gte('dt', from).order('dt')
+        if (!alive) return
+        const latest = new Map()
+        ;(a || []).forEach((row) => latest.set(row.asset, row))
+        setAssets([...latest.values()])
+        const { data: s } = await supabase.from('asset_regime_stats').select('*')
+        if (alive && s) setStats(s)
+        setState('ok')
+      } catch (e) {
+        if (!alive) return
+        const msg = `${e?.message || ''} ${e?.code || ''}`
+        setState(/exist|find the table|PGRST205|42P01/i.test(msg) ? 'empty' : 'error')
+      }
+    })()
+    return () => { alive = false }
+  }, [])
+
+  if (state !== 'ok') {
+    return (
+      <>
+        <header><h1>자산배분</h1></header>
+        {state === 'loading' && <div className="col-msg">불러오는 중…</div>}
+        {state === 'error' && <div className="col-msg">데이터를 불러오지 못했어요</div>}
+        {state === 'empty' && (
+          <div className="col-msg soon">🚧<br /><b>데이터 준비 중</b><br />
+            <span>sql/regime_daily.sql 등 3개 실행 + allocation.py 적재 필요</span></div>
+        )}
+      </>
+    )
+  }
+
+  const last = rg[rg.length - 1]
+  const quad = QUAD_META[last.quadrant] || {}
+  const byAsset = new Map(assets.map((a) => [a.asset, a]))
+  const stat = (regime, asset) => stats.find((s) => s.regime === regime && s.asset === asset)
+  const fmt1 = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${Number(v).toFixed(1)}%`)
+  const curEp = stats.find((s) => s.regime === last.quadrant)?.n_episodes
+
+  return (
+    <>
+      <header>
+        <h1>자산배분</h1>
+        <p className="lead">
+          시장 배경(성장 기대 × 물가 압력)이 <b>어떤 자산의 계절인지</b> 가늠하고, 자산마다
+          <b> 지금 가격이 자기 역사 대비 어디쯤인지</b> 봅니다. 배분 비율이나 매수 신호가 아니라
+          <b> "과거에 이 국면에서 이랬다"는 통계</b>까지만 보여드려요.
+        </p>
+      </header>
+
+      <section className="card">
+        <h2>🧭 지금 어느 국면인가</h2>
+        <div className="al-regime">
+          <QuadMap series={rg} />
+          <div className="al-rinfo">
+            <div className="al-rlabel" style={{ color: quad.color }}>{quad.label}</div>
+            <p className="al-rhint">{quad.hint} <span className="al-alias">(별칭: {quad.alias})</span></p>
+            <div className="al-raxes">
+              <div>성장기대 <b>{Math.round(last.g_score)}</b>/100 — 구리/금 비율의 방향</div>
+              <div>물가압력 <b>{Math.round(last.i_score)}</b>/100 — 물가 탭 I(t) 스냅샷</div>
+            </div>
+            <p className="al-rdays">
+              이 국면 <b>{last.days_in}거래일째</b>{last.transition && <b className="al-warn"> · ⚠️ 경계 부근(전환주의)</b>}
+              {' '}· 회색 선 = 최근 60일 궤적 · {last.dt} 기준
+            </p>
+          </div>
+        </div>
+        <p className="note">
+          <b>성장기대</b>는 구리(산업 수요)와 금(피난처) 가격비의 <b>방향</b>입니다 — 비율이 오르는 중이면
+          시장이 성장 쪽으로 기대를 옮기는 중. 실물 성장 지표가 아니라 <b>시장이 가격에 반영한 기대</b>라서
+          실제 경기와 어긋날 수 있어요. 국면 구분선(50) 근처에선 라벨을 약하게 읽으세요.
+        </p>
+      </section>
+
+      <section className="card">
+        <h2>🏆 이 국면에서 과거 자산 성적표</h2>
+        <div className="seg">
+          {HORIZONS.map((n) => (
+            <button key={n} className={h === n ? 'on' : ''} onClick={() => setH(n)}>{n}일</button>
+          ))}
+        </div>
+        <table className="al-table">
+          <thead><tr><th>자산</th><th>현 국면 이후{h}일</th><th>승률</th><th>전체 기간</th></tr></thead>
+          <tbody>
+            {ALLOC_ASSETS.map((m) => {
+              const cur = stat(last.quadrant, m.key)
+              const all = stat('all', m.key)
+              return (
+                <tr key={m.key}>
+                  <td>{m.emoji} {m.name}{m.badge && <em className="al-flag" title={m.badge}>⚠️</em>}</td>
+                  <td style={{ color: cur?.[`fwd${h}`] > 0 ? '#c0392b' : '#2471a3' }}>{fmt1(cur?.[`fwd${h}`])}</td>
+                  <td>{cur?.[`hit${h}`] == null ? '—' : `${Math.round(cur[`hit${h}`])}%`}</td>
+                  <td className="al-dim">{fmt1(all?.[`fwd${h}`])}</td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+        <p className="note">
+          현 국면({quad.alias})은 과거에 <b>{curEp ?? '—'}번</b>(연속 구간 기준) 있었습니다 —
+          겹치는 날들은 독립 표본이 아니라서, <b>통계라기보다 사례 모음</b>으로 읽어야 해요.
+          '전체 기간' 열이 비교 기준(무조건부 평균)입니다. ⚠️ 표시(비트코인)는 이력 전체가
+          상승기라 국면과 무관하게 평균이 높게 나오는 자산이에요.
+        </p>
+      </section>
+
+      <section className="card">
+        <h2>🌡️ 자산별 현재 위치 (가격이 자기 역사 대비 어디인가)</h2>
+        <div className="al-grid">
+          {ALLOC_ASSETS.map((m) => {
+            const a = byAsset.get(m.key)
+            if (!a) return null
+            return (
+              <div key={m.key} className="al-card">
+                <div className="al-head">
+                  <b>{m.emoji} {m.name}</b><span className={`al-role al-role-${m.role}`}>{m.role}</span>
+                </div>
+                <PosBar label="추세" v={a.c_trend} lo="약세" hi="강세" />
+                <PosBar label="과열" v={a.c_heat} lo="차갑다" hi="뜨겁다" />
+                <div className="al-raw">
+                  {Number(a.raw_px).toLocaleString(undefined, { maximumFractionDigits: 2 })}{m.unit === '$' ? '$' : (m.unit === '원' ? '원' : '')}
+                  {a.raw_dd252 != null && <span> · 52주고점 {Number(a.raw_dd252).toFixed(1)}%</span>}
+                  {a.raw_r12m != null && <span> · 12개월 {a.raw_r12m > 0 ? '+' : ''}{Number(a.raw_r12m).toFixed(1)}%</span>}
+                </div>
+                {m.anchors.map(([k, label, f]) => a[`anchor_${k}`] != null && (
+                  <div key={k} className="al-anchor">{label} <b>{f(Number(a[`anchor_${k}`]))}</b></div>
+                ))}
+                <div className="al-prod">🛒 {m.products}</div>
+              </div>
+            )
+          })}
+        </div>
+        <p className="note">
+          <b>추세</b> = 12개월 흐름(최근 1달 제외)이 지난 3년 대비 어디인가 · <b>과열</b> = 200일
+          평균선과의 거리가 3년 대비 어디인가. <b>일부러 하나로 합치지 않았습니다</b> — 둘은 방향이
+          자주 달라서(추세는 강한데 단기 과열 등) 합치면 정보가 사라지고 '추천 점수'처럼 읽히거든요.
+          금의 <b>실질금리</b>는 금 보유의 기회비용(이자 없는 자산이라)이라 금 판단의 제1 렌즈지만,
+          2022년 이후 중앙은행 매수로 이 관계가 흐려진 시기도 있어요 — 그래서 렌즈를 여러 개 둡니다.
+          🛒 실행상품은 참고용 표기일 뿐, 통계는 전부 <b>긴 이력의 원자료(선물·지수)</b> 기준입니다.
+        </p>
+      </section>
+
+      <section className="card method">
+        <h2>📖 이 화면의 한계 (읽고 쓰세요)</h2>
+        <ul>
+          <li><b>조언이 아닙니다</b> — 배분 비율·매수 신호를 만들지 않고, 현재 위치와 과거 통계만 보여줍니다.</li>
+          <li><b>국면은 사후에 다시 그려질 수 있어요</b> — 성분 검증에 쓴 역사적 기준일(2020 코로나 등 6건)은
+            '아는 역사'에 맞춘 확인이라, 미래에도 맞는다는 보장이 아닙니다.</li>
+          <li><b>수익률은 각 자산의 표시통화 기준</b> — 원화 투자자의 체감(환율 포함)은 다음 단계에서
+            원화 환산으로 추가 예정입니다. 급락기엔 원/달러 상승이 달러 자산 손실을 완충하곤 했어요.</li>
+          <li><b>2022년을 기억하세요</b> — 채권이 주식과 같이 무너진 해. 방어재는 국면마다 달랐고,
+            그래서 이 탭은 '항상 통하는 답' 대신 국면별 기록을 보여줍니다.</li>
+        </ul>
+      </section>
+    </>
   )
 }
 

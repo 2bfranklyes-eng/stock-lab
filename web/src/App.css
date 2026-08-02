@@ -169,6 +169,45 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .hp-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 3px; }
 .hp-legend-cap { color: #64748b; }
 
+/* ── 자산배분 탭 ── */
+.al-regime { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+.al-quad { width: 220px; flex: none; border: 1px solid var(--line); border-radius: 10px; }
+.al-qlabel { font-size: 4.6px; fill: #94a3b8; }
+.al-rinfo { flex: 1; min-width: 220px; }
+.al-rlabel { font-size: 18px; font-weight: 800; }
+.al-rhint { margin: 4px 0 10px; font-size: 13px; color: #475569; }
+.al-alias { color: #94a3b8; }
+.al-raxes { display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
+.al-raxes b { font-size: 15px; }
+.al-rdays { font-size: 12px; color: #64748b; margin-top: 10px; }
+.al-warn { color: #d97706; }
+.al-table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 4px; }
+.al-table th { text-align: left; font-size: 11px; color: #94a3b8; font-weight: 600;
+  padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.al-table td { padding: 5px 8px; border-bottom: 1px solid var(--line); }
+.al-table td:nth-child(2) { font-weight: 700; }
+.al-dim { color: #94a3b8; }
+.al-flag { font-style: normal; margin-left: 4px; cursor: help; }
+.al-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.al-card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.al-head { display: flex; align-items: center; justify-content: space-between; }
+.al-role { font-size: 10px; font-weight: 700; padding: 1px 7px; border-radius: 8px; background: var(--track); color: #64748b; }
+.al-role-위험 { color: #c0392b; } .al-role-방어 { color: #2471a3; }
+.al-role-헤지 { color: #d97706; } .al-role-실물 { color: #7c3aed; }
+.al-meter { display: grid; grid-template-columns: 30px 1fr 26px; gap: 6px; align-items: center; }
+.al-mlabel { font-size: 11px; color: #64748b; }
+.al-track { position: relative; height: 6px; border-radius: 3px;
+  background: linear-gradient(90deg, #2471a355, var(--track), #c0392b55); }
+.al-track i { position: absolute; top: 50%; transform: translate(-50%, -50%);
+  width: 10px; height: 10px; border-radius: 50%; background: #1f2937; border: 2px solid var(--card); }
+.al-mval { font-size: 12px; font-weight: 700; text-align: right; }
+.al-mscale { display: none; }
+.al-raw { font-size: 11.5px; color: #475569; }
+.al-anchor { font-size: 11.5px; color: #64748b; }
+.al-anchor b { color: #1f2937; }
+.al-prod { font-size: 11px; color: #94a3b8; margin-top: auto; padding-top: 4px; }
+
 /* ── 모바일: 세로로 쌓기 ── */
 @media (max-width: 640px) {
   .cols { flex-direction: column; gap: 8px; }
