@@ -15,6 +15,8 @@ jobs:
       ECOS_API_KEY: ${{ secrets.ECOS_API_KEY }}   # 한국 국내 금리(국고채·회사채) + 실탄(M2·수급) 수집용
       FRED_API_KEY: ${{ secrets.FRED_API_KEY }}   # 미국 실탄(Fed 순유동성) 수집용
       KRX_API_KEY: ${{ secrets.KRX_API_KEY }}     # KRX 실제 회전율(매물대 정밀화) — 없으면 프록시로 동작
+      KRX_ID: ${{ secrets.KRX_ID }}               # KRX 정보데이터시스템 로그인 — 주체별 실측(holders.py)용
+      KRX_PW: ${{ secrets.KRX_PW }}               # 시크릿 미설정이면 holders.py가 스스로 건너뜀
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -26,6 +28,8 @@ jobs:
       - run: python krx.py           # KRX 실제 회전율 + 워치리스트 종목 일별시세 (증분)
       - run: python profile.py --push    # 지수 매물대 → volume_profile (매물대 탭용)
       - run: python profile.py --stocks  # 개별종목 매물대 → volume_profile
+      - run: python holders.py       # 주체별 실측 매물대 → holder_profile (시크릿 없으면 자동 스킵)
+        continue-on-error: true      # 정보데이터시스템 스크래핑 실패가 다른 갱신을 막지 않게
       - run: python sentiment.py     # S(t) 심리점수 계산 → sentiment_daily
       - run: python liquidity.py     # L(t) 유동성 지수 계산 → liquidity_daily
       - run: python inflation.py     # I(t) 물가 지수 계산 → inflation_daily

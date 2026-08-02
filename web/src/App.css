@@ -150,6 +150,20 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .vp-now span { position: absolute; right: 0; top: -13px; font-size: 10px; font-weight: 700;
   color: #d97706; background: var(--card); padding: 0 4px; }
 
+/* ── 주체별 실측(HolderSection) — 매물대 카드와 같은 골격, 막대만 주체별 색 분절 ── */
+.hp-sum { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.hp-card { flex: 1 1 130px; background: var(--card); border: 1px solid var(--line);
+  border-top: 3px solid #ccc; border-radius: 10px; padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 3px; }
+.hp-name { font-size: 11px; font-weight: 700; }
+.hp-pos { font-size: 15px; font-weight: 800; }
+.hp-pl { font-size: 11px; font-weight: 600; }
+.hp-bar { display: flex; height: 7px; border-radius: 2px; overflow: hidden; opacity: .8; }
+.hp-bar i { display: block; height: 100%; }
+.vp-row.on .hp-bar { outline: 1px solid #d97706; opacity: 1; }
+.hp-legend { display: flex; gap: 10px; flex-wrap: wrap; margin-right: auto; }
+.hp-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 3px; }
+
 /* ── 모바일: 세로로 쌓기 ── */
 @media (max-width: 640px) {
   .cols { flex-direction: column; gap: 8px; }
@@ -164,6 +178,8 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   /* 손가락으로는 9px 막대를 정확히 짚기 어렵다 — 매물대 막대만 조금 키운다 */
   .vp-row { height: 12px; }
   .vp-bar { height: 9px; }
+  .hp-bar { height: 9px; }
+  .hp-card { flex: 1 1 45%; }
   .vp-price { flex-basis: 48px; }
   /* 막대 시작 x = 가격라벨 폭(48) + .vp-row gap(8). 이 값이 어긋나면 선과 막대가 가로로 밀린다 */
   .vp-now { left: 56px; }
@@ -195,6 +211,7 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   .outlook .owarn b { color: #fde68a; }
   .scr-q, .pf-add input, .pf-hits button { color: #f1f5f9; }
   .vp-tip em { color: #cbd5e1; }
+  .hp-pos { color: #e2e8f0; }
   .note.owarn-inline { background: #2a1f07; border-color: #78350f; color: #fcd34d; }
   .note.owarn-inline b { color: #fde68a; }
   .stats.scr .scr-name .same  { color: #94a3b8; }

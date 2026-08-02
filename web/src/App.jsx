@@ -1496,6 +1496,7 @@ function ProfileSection() {
         </div>
       )}
       {state === 'ok' && <ProfileBody rows={rows} series={series} />}
+      {mode === 'stk' && code && <HolderSection code={code} win={win} />}
       <ProfileMethod />
     </>
   )
@@ -1749,6 +1750,154 @@ function ProfileMethod() {
         회전율도 유통주식수 대신 <b>직전 1년 거래량 합 대비</b>로 근사합니다(한국 지수는 KRX 실제 회전율 사용) ·
         거래량은 KRX 기준(NXT 미포함) · 일봉이라 장중 가격대 배분은 균등 가정 · 파생/ETF 간접 물량은 안 잡힙니다.
         <b>정밀 측정이 아니라 구조 파악용</b>이에요.</p>
+    </section>
+  )
+}
+
+// ── 주체별 실측 섹션: holders.py가 적재하는 holder_profile ──
+// 위 매물대가 거래량 감쇠 '모델'의 추정이라면, 이건 KRX 투자자별 순매수의 '실측' 누적이다.
+// 감쇠 가정이 없는 대신 창 구간 순매수만 보이고, 같은 주체 안 손바뀜(개인↔개인)은 안 잡힌다.
+const HP_TYPES = [
+  { key: '개인', label: '개인', color: '#d97706' },
+  { key: '외국인합계', label: '외국인', color: '#2471a3' },
+  { key: '기관합계', label: '기관', color: '#7c3aed' },
+  { key: '기타법인', label: '기타법인', color: '#94a3b8' },
+]
+const HP_MAX_WIN = 730             // holders.py 백필 한도 — 실측은 최대 2년
+
+function HolderSection({ code, win }) {
+  const hwin = Math.min(win, HP_MAX_WIN)
+  const [rows, setRows] = useState([])
+  const [state, setState] = useState('loading')
+  const [hover, setHover] = useState(null)
+
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      setState('loading')
+      setHover(null)
+      try {
+        const { data, error } = await supabase.from('holder_profile').select('*')
+          .eq('code', code).eq('win_days', hwin)
+          .order('bin_lo', { ascending: false })   // 위(고가) → 아래(저가), 모델 차트와 동일
+        if (error) throw error
+        if (!alive) return
+        if (!data || !data.length) { setState('empty'); return }
+        setRows(data); setState('ok')
+      } catch {
+        if (alive) setState('error')
+      }
+    })()
+    return () => { alive = false }
+  }, [code, hwin])
+
+  // 4주체 행을 가격 구간별로 합친다. rows는 bin_lo 내림차순이라 Map 삽입 순서가 곧 그리는 순서.
+  const bins = useMemo(() => {
+    const m = new Map()
+    for (const r of rows) {
+      if (!m.has(r.bin_lo)) m.set(r.bin_lo, { bin_lo: r.bin_lo, bin_hi: r.bin_hi, total: 0, by: {}, qtyBy: {} })
+      const b = m.get(r.bin_lo)
+      b.by[r.inv] = (b.by[r.inv] || 0) + r.share
+      b.qtyBy[r.inv] = (b.qtyBy[r.inv] || 0) + (r.qty || 0)
+      b.total += r.share
+    }
+    return [...m.values()]
+  }, [rows])
+
+  if (state === 'empty') {
+    return (
+      <section className="card">
+        <h2>🧾 누가 어디서 샀나 (주체별 실측)</h2>
+        <p className="note">이 종목은 아직 주체별 실측을 수집하지 않아요 — <b>시총 상위 50 + 관심종목만</b>
+          {' '}매일 수집합니다. (KRX 투자자별 순매수 기반이라 종목마다 스크래핑이 필요해서 범위를 좁혔어요)</p>
+      </section>
+    )
+  }
+  if (state !== 'ok') {
+    return (
+      <section className="card">
+        <h2>🧾 누가 어디서 샀나 (주체별 실측)</h2>
+        <div className="col-msg">{state === 'loading' ? '불러오는 중…' : '데이터를 불러오지 못했어요'}</div>
+      </section>
+    )
+  }
+
+  const px = rows[0].px
+  const dt = rows[0].dt
+  const max = Math.max(...bins.map((b) => b.total), 1e-9)
+  const fmt = (v) => Math.round(v).toLocaleString()
+  const step = Math.max(1, Math.ceil(bins.length / 12))
+  const nowIdx = Math.max(0, bins.findIndex((b) => b.bin_lo <= px))
+  // 주체 요약 — pos_qty·avg_cost는 그 주체의 모든 행에 같은 값이 실려 있다(조인 없이 그리기용)
+  const summary = HP_TYPES.map((t) => {
+    const r = rows.find((x) => x.inv === t.key)
+    return { ...t, pos: r?.pos_qty || 0, cost: r?.avg_cost }
+  })
+  const winLabel = VP_WINS.find((w) => w.days === hwin)?.label || `${hwin}일`
+
+  return (
+    <section className="card">
+      <h2>🧾 누가 어디서 샀나 (주체별 실측 · 최근 {winLabel})</h2>
+      {win > HP_MAX_WIN && (
+        <p className="note">실측 수집은 <b>최대 2년</b>이라, 위에서 더 긴 구간을 골라도 여긴 2년치를 보여드려요.</p>
+      )}
+      <div className="hp-sum">
+        {summary.map((t) => (
+          <div key={t.key} className="hp-card" style={{ borderTopColor: t.color }}>
+            <span className="hp-name" style={{ color: t.color }}>{t.label}</span>
+            <span className="hp-pos">{t.pos > 0 ? qtyFmt(t.pos) : '창 내 순매도'}</span>
+            {t.pos > 0 && t.cost > 0 && (
+              <span className="hp-pl" style={{ color: px >= t.cost ? '#c0392b' : '#2471a3' }}>
+                평단 {fmt(t.cost)} ({px >= t.cost ? '+' : ''}{(px / t.cost * 100 - 100).toFixed(1)}%)
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="vp-wrap">
+        <div className="vp-bars">
+          {bins.map((b, i) => (
+            <div key={b.bin_lo} className={'vp-row' + (hover === i ? ' on' : '')}
+              onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}
+              onClick={() => setHover(hover === i ? null : i)}>
+              <span className="vp-price">{i % step === 0 ? fmt(b.bin_lo) : ''}</span>
+              <div className="hp-bar" style={{ width: `${Math.max(0.5, b.total / max * 100)}%` }}>
+                {HP_TYPES.map((t) => (b.by[t.key] || 0) > 0 && (
+                  <i key={t.key} style={{ flex: b.by[t.key], background: t.color }} />
+                ))}
+              </div>
+            </div>
+          ))}
+          <div className="vp-now" style={{ top: `${(nowIdx / bins.length) * 100}%` }}>
+            <span>현재가 {fmt(px)}</span>
+          </div>
+        </div>
+        <div className="vp-chart-cap">
+          <span className="hp-legend">
+            {HP_TYPES.map((t) => <span key={t.key}><i style={{ background: t.color }} />{t.label}</span>)}
+          </span>
+          {dt} 기준
+        </div>
+      </div>
+      {hover != null && bins[hover] && (
+        <div className="vp-tip">
+          <b>{fmt(bins[hover].bin_lo)} ~ {fmt(bins[hover].bin_hi)}</b>
+          <span>({((bins[hover].bin_lo + bins[hover].bin_hi) / 2 / px * 100 - 100).toFixed(1)}%)</span>
+          {HP_TYPES.map((t) => (bins[hover].qtyBy[t.key] || 0) > 0 && (
+            <em key={t.key} style={{ color: t.color }}>{t.label} {qtyFmt(bins[hover].qtyBy[t.key])}</em>
+          ))}
+        </div>
+      )}
+      <p className="note">
+        📌 <b>위 매물대와 뭐가 다른가</b> — 위는 거래량을 감쇠 <b>모델</b>로 추정한 것, 이건 KRX가
+        집계한 <b>투자자별 순매수의 실측 누적</b>입니다(감쇠 가정 없음). 순매수일엔 그날 가격대에 쌓고,
+        순매도일엔 그 주체 보유분에서 비례로 뺐어요. 막대가 긴 가격대 = 그 주체들이 사서 아직 안 판
+        물량이 몰린 곳(현재가 위면 본전 매도 압력 후보). <b>평단</b>이{' '}
+        <b style={{ color: '#c0392b' }}>빨강이면 이익권</b>,{' '}
+        <b style={{ color: '#2471a3' }}>파랑이면 물려 있는 상태</b>예요.{' '}
+        <b>한계</b>: 최근 {winLabel} 순매수만 보여요(그 전부터 든 물량 제외) · 같은 주체끼리
+        손바뀜(개인↔개인)은 안 잡혀요 · 창 내내 순매도인 주체는 보유 0 · KRX 정규장 기준.
+      </p>
     </section>
   )
 }
