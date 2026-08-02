@@ -12,15 +12,23 @@
 #
 #   데이터 흐름: pykrx(정보데이터시스템, KRX_ID/PW 로그인) → investor_flow(일별 순매수 캐시,
 #   증분 수집) → 창(91/182/365/730일)별 보유분포 계산 → holder_profile (웹이 읽음).
-#   캐시 덕에 매일 종목당 pykrx 호출 2번(수량+대금)이면 된다 — 스크래핑 부하 방어.
 #   pykrx는 '임포트 시점에' KRX 로그인을 시도하므로 지연 임포트한다 — 로그인이 차단돼도
 #   빠진 거래일이 없는 종목(주말 재계산 등)은 캐시만으로 끝까지 돈다.
+#
+#   ⚡ 수집 경로가 둘이다 — 싼 쪽을 골라 쓴다:
+#     · 일일 증분 = 벌크([12010] 투자자별 순매수상위종목). 한 번 호출에 그 시장 '전 종목'
+#       하루치가 온다. 시장2 × 투자자5 = 10회면 코스피+코스닥 전부 — 비용이 종목수와 무관.
+#       (종목별로 받으면 200종목 × 2회 = 400회/일. 이게 예전에 로그인 차단을 부른 부하다.)
+#     · 신규 종목 백필 = 종목별([12009]). 한 종목 745일치가 6회면 끝나는데, 같은 걸 벌크로
+#       하면 494거래일 × 10회 = 4,940회다. 날짜수가 많고 종목수가 적을 땐 종목별이 싸다.
+#   두 경로 값이 같음은 확인했다(코스피·코스닥, 4주체, 과거일 포함 전부 일치).
+#   단 벌크엔 '외국인합계'가 없어 외국인 + 기타외국인을 더해야 종목별과 같아진다.
 #
 #   분할 보정: 가격은 stock_daily 기준 split_adjust로 낮추므로, 순매수 '수량'은 그 역수로
 #   늘려야 같은 단위가 된다(대금은 불변). 이걸 빼먹으면 분할 종목의 평단·분포가 어긋난다.
 #
-#   사용: python holders.py                → 시총 상위 50 + SCREENER_ALWAYS, 증분 수집+적재 (크론용)
-#         python holders.py 005930        → 특정 종목만
+#   사용: python holders.py                → 시총 상위 200 + SCREENER_ALWAYS, 증분 수집+적재 (크론용)
+#         python holders.py 005930        → 특정 종목만 (벌크 생략, 종목별 경로만)
 #         python holders.py 005930 --dry  → 적재 없이 콘솔 요약만 (검증용)
 import os
 import sys
@@ -40,7 +48,12 @@ import profile as vp             # noqa: E402  Supabase 클라이언트·페이�
 WINDOWS = [91, 182, 365, 730]    # 실측은 창 이전 보유를 모르므로 짧은 창이 본질에 더 맞다
 NBINS = 60                       # volume_profile 종목과 같은 해상도
 BACKFILL_DAYS = 745              # 최장 창(730) + 여유 — 첫 실행 때 이만큼 pykrx에서 백필
-TOP_N = 50                       # 시총 상위 N종목만 — 스크래핑이라 전 종목은 부하·차단 위험
+# 상한을 정하는 건 이제 KRX 부하가 아니라 Supabase 무료 티어다 — 벌크 전환으로 호출은
+# 종목수와 무관해졌지만, 저장은 종목당 약 440KB(holder_profile 960행 + investor_flow 1,976행)
+# 씩 늘고 크론이 매일 그만큼 읽는다. 200종목 ≈ 저장 88MB · egress 0.8GB/월로 500MB·5GB 안에 든다.
+TOP_N = 200
+NEW_PER_RUN = 40                 # 한 실행에서 새로 백필할 종목 수 상한 — 나머지는 다음 크론이 이어받는다.
+                                 # 162종목을 한 번에 훑다 차단당하느니 나흘에 나눠 받는다.
 
 # ── 주체별 보유분포 코어 (crossval.py에서 이관 — 연구 스크립트가 여기서 임포트한다) ──
 # production(이 파일)이 본체인 이유: crossval은 pykrx를 모듈 임포트 시점에 불러 로그인이
@@ -192,16 +205,111 @@ def fetch_krx(code, frm, to, trading_days):
     return vol[~vol.index.duplicated()], val[~val.index.duplicated()]
 
 
-def sync_flows(code, dry, trading_days):
-    """캐시 + 빠진 구간만 pykrx로 증분 수집 → (수량 wide, 대금 wide). 새 행은 DB에 upsert."""
+# ── 벌크 경로: 하루 10회 호출로 전 종목 ──────────────────────────────────
+# 벌크엔 '외국인합계' 항목이 없다 — 외국인(9000) + 기타외국인(9001)을 더해야 종목별과 일치한다.
+BULK_INV = {"기관합계": ("기관합계",), "기타법인": ("기타법인",),
+            "개인": ("개인",), "외국인합계": ("외국인", "기타외국인")}
+MARKETS = ("KOSPI", "KOSDAQ")
+BULK_MAX_DAYS = 20               # 오래 멈춘 뒤 재개하면 날짜×10회가 커진다 — 그쯤부턴 종목별이 싸다
+MIN_CODES = 1000                 # 거래일이면 코스피+코스닥 2,600여 종목이 온다 — 이보다 적으면 반쪽 응답
+
+
+def bulk_day(d):
+    """하루치 전 종목 주체별 순매수 → {code: {inv: [vol, val]}}. 시장2 × 투자자5 = 10회.
+    fetch_krx와 같은 이유로 빈 응답을 재시도한다 — pykrx는 KRX가 에러페이지를 주면 예외를
+    삼키고 빈 DataFrame을 돌려주므로, 그냥 두면 '수집 실패'가 '순매수 0'으로 둔갑해 조용히
+    적재된다. 여기선 종목이 한꺼번에 걸려 있어 피해가 더 크다."""
+    out = {}
+    for market in MARKETS:
+        for t, parts in BULK_INV.items():
+            for p in parts:
+                df = None
+                for attempt in range(4):
+                    if attempt:
+                        time.sleep(2 * attempt ** 2)     # 2·8·18초 — 레이트리밋은 잠깐 쉬면 풀린다
+                    df = krx().get_market_net_purchases_of_equities(d, d, market, p)
+                    if len(df):
+                        break
+                if not len(df):
+                    raise RuntimeError(f"{d} {market}/{p} 빈 응답 — 이 날은 건너뜁니다")
+                time.sleep(0.3)                   # 정보데이터시스템 예의 — 연속 타격 방지
+                for code, r in df.iterrows():
+                    cell = out.setdefault(code, {}).setdefault(t, [0.0, 0.0])
+                    cell[0] += float(r["순매수거래량"])
+                    cell[1] += float(r["순매수거래대금"])
+    if len(out) < MIN_CODES:
+        raise RuntimeError(f"{d} 응답 {len(out)}종목뿐 — 반쪽 데이터로 보고 적재하지 않습니다")
+    return out
+
+
+def market_calendar():
+    """시장 거래일 달력 — 삼성전자 일봉을 쓴다(거래정지가 없어 빠진 날이 곧 휴장일)."""
+    rows = vp.page("stock_daily", "dt", code="005930")
+    return pd.DatetimeIndex(sorted(pd.to_datetime([r["dt"] for r in rows])))
+
+
+def bulk_fill(codes, dry):
+    """캐시가 끝난 날 다음부터 오늘까지를 벌크로 채운다. 대상 종목이 한꺼번에 채워지므로
+    이 뒤의 종목별 루프는 대부분 pykrx를 아예 안 부른다.
+    ⚠️ 응답엔 코스피+코스닥 2,600여 종목이 다 오지만 대상(codes)만 저장한다 — 전부 넣으면
+    하루 1만 행씩 쌓여 무료 티어가 금방 찬다. 커버리지를 정하는 건 TOP_N이지 응답 크기가 아니다.
+    investor_flow의 전역 max(dt)를 기준으로 삼는 게 성립하는 이유: 벌크는 항상 '그날 대상 전부'를
+    쓰므로, 마지막 적재일 = 마지막으로 벌크가 훑은 날이다."""
+    r = (vp.client().table("investor_flow").select("dt")
+         .order("dt", desc=True).limit(1).execute().data) or []
+    if not r:
+        print("investor_flow가 비어 있음 — 벌크 생략, 종목별 백필로 채웁니다")
+        return 0
+    last = pd.Timestamp(r[0]["dt"])
+    today = pd.Timestamp.today().normalize()
+    days = [d for d in market_calendar() if last < d <= today]
+    if not days:
+        print(f"벌크 증분 없음 (캐시 최신일 {last:%Y-%m-%d})")
+        return 0
+    if len(days) > BULK_MAX_DAYS:
+        print(f"⚠️ 빠진 거래일 {len(days)}일 — 최근 {BULK_MAX_DAYS}일만 벌크로. "
+              "나머지는 종목별 백필이 메웁니다")
+        days = days[-BULK_MAX_DAYS:]
+    want, rows, ok = set(codes), [], 0
+    for d in days:
+        # 한 날이 실패하면 거기서 멈춘다 — 건너뛰고 뒷날을 쓰면 max(dt)가 그 날을 지나쳐
+        # 구멍이 영구히 남는다. 여기서 끊으면 다음 실행이 실패한 날부터 다시 받는다.
+        try:
+            got = bulk_day(d.strftime("%Y%m%d"))
+        except Exception as e:
+            print(f"  벌크 {d:%Y-%m-%d} 중단: {e}")
+            break
+        hit = want & got.keys()
+        for code in hit:
+            for t, (v, w) in got[code].items():
+                rows.append({"code": code, "dt": d.strftime("%Y-%m-%d"),
+                             "inv": t, "vol": v, "val": w})
+        ok += 1
+        print(f"  벌크 {d:%Y-%m-%d}: 응답 {len(got)}종목 중 대상 {len(hit)}종목")
+    if rows and not dry:
+        for i in range(0, len(rows), 1000):
+            vp.client().table("investor_flow").upsert(rows[i:i + 1000]).execute()
+    print(f"벌크 수집: {ok}/{len(days)}거래일 · {ok * 10}회 호출 · {len(rows):,}행"
+          + ("" if ok == len(days) else " (나머지는 다음 실행에서)"))
+    return len(rows)
+
+
+def sync_flows(code, dry, trading_days, allow_fetch=True):
+    """캐시 + 빠진 구간만 pykrx로 증분 수집 → (수량 wide, 대금 wide). 새 행은 DB에 upsert.
+    allow_fetch=False면 종목별 호출이 필요한 시점에 멈춘다 — 한 실행의 백필량을 묶는 손잡이."""
     cache = cached_flows(code)
     today = pd.Timestamp.today().normalize()
     start = today - pd.Timedelta(days=BACKFILL_DAYS)
-    if not cache.empty:
+    # max(dt)만 보고 '최신'이라 판단하면 안 된다 — 벌크는 최근 며칠만 쓰므로, 신규 종목은
+    # 캐시 뒤쪽만 차고 앞이 텅 빈 채로 '오늘까지 있음'처럼 보인다. 앞도 덮였는지 같이 본다.
+    # (기준은 그 종목 자신의 첫 거래일 — 최근 상장주는 앞이 비는 게 정상이라 오판하면 안 된다)
+    if not cache.empty and cache["dt"].min() <= trading_days[0] + pd.Timedelta(days=15):
         start = max(start, cache["dt"].max() + pd.Timedelta(days=1))
     new_rows = []
     # 빠진 '거래일'이 실제로 있을 때만 pykrx를 부른다 — 주말·휴일 재실행은 캐시만으로 돈다
     if len(trading_days[(trading_days >= start) & (trading_days <= today)]):
+        if not allow_fetch:
+            return None, None, -1                 # 이번 실행 백필 정원 초과 — 다음 크론에 넘긴다
         vol, val = fetch_krx(code, start, today, trading_days)
         if vol is not None:
             for dt, r in vol.iterrows():
@@ -327,7 +435,15 @@ if __name__ == "__main__":
     if not keep_net:
         print("⚠️ holder_profile에 net_qty 컬럼이 없음 — sql/holder_profile_add_net.sql 실행 필요. "
               "이번엔 net_qty 빼고 적재합니다.")
+    # 전 종목 증분을 먼저 벌크로 끝낸다 — 종목별 루프가 pykrx를 부를 일이 신규 종목만 남는다.
+    # 종목을 지정한 실행은 그 종목만 보므로 벌크(전 종목)를 돌릴 이유가 없다.
+    if not args:
+        try:
+            bulk_fill([c for c, _ in tg], dry)
+        except Exception as e:
+            print(f"벌크 증분 실패 — 종목별 경로로 진행합니다: {e}")
     batch_rows, batch_codes, done, failed = [], [], 0, []
+    budget, deferred = NEW_PER_RUN, []
     for code, name in tg:
         try:
             # 가격을 먼저 받는다 — 거래일 목록이 있어야 '빈 응답'이 수집 실패인지 상장 전인지 가른다
@@ -335,7 +451,12 @@ if __name__ == "__main__":
             if len(df) < 60:
                 print(f"{name}({code}): 가격 데이터 부족({len(df)}일) — 건너뜀")
                 continue
-            volw, valw, n_new = sync_flows(code, dry, df.index)
+            volw, valw, n_new = sync_flows(code, dry, df.index, allow_fetch=budget > 0)
+            if n_new == -1:
+                deferred.append(code)
+                continue
+            if n_new:
+                budget -= 1                       # 종목별 호출을 쓴 종목만 정원에서 깐다
             if volw is None:
                 print(f"{name}({code}): 순매수 데이터 없음 — 건너뜀")
                 continue
@@ -367,3 +488,6 @@ if __name__ == "__main__":
         done += len(batch_codes)
     if not dry:
         print(f"\n완료: {done}종목 적재" + (f" · 실패 {len(failed)}: {','.join(failed)}" if failed else ""))
+    if deferred:
+        print(f"백필 대기 {len(deferred)}종목 (실행당 {NEW_PER_RUN}종목 상한) — 다음 크론이 이어받습니다: "
+              + ",".join(deferred[:10]) + (" …" if len(deferred) > 10 else ""))
