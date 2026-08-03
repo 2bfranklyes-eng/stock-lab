@@ -24,8 +24,10 @@ jobs:
           python-version: '3.12'
       - run: pip install -r requirements.txt
       - run: python ingest.py       # 원천 지표 수집 (미국+한국: 심리·유동성 지표)
+      # krx.py가 prices.py보다 먼저다 — KRX 지수 종가로 야후의 하루 지연을 덮어쓴 뒤라야
+      # price_daily(비교 탭)와 아래 지표들이 같은 최신일을 본다.
+      - run: python krx.py           # KRX 실제 회전율 + 지수 종가 보정 + 워치리스트 종목 일별시세
       - run: python prices.py        # 대표 지수(us_index/kr_index) → 공개용 price_daily (비교 탭용)
-      - run: python krx.py           # KRX 실제 회전율 + 워치리스트 종목 일별시세 (증분)
       - run: python profile.py --push    # 지수 매물대 → volume_profile (매물대 탭용)
       - run: python profile.py --stocks  # 개별종목 매물대 → volume_profile
       - run: python holders.py       # 주체별 실측 매물대 → holder_profile (시크릿 없으면 자동 스킵)

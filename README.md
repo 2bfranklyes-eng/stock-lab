@@ -21,7 +21,8 @@ Supabase(방과후와 별도 프로젝트) + Python 파이프라인 + React 대�
 - `sql/` — 테이블 DDL(수동 생성용). 새 테이블 추가 시 여기 SQL을 Supabase SQL Editor에 실행
 - `plot.py` — 로컬 검증용 그래프 (matplotlib)
 - `web/` — Vite+React 대시보드 (GitHub Pages 배포)
-- `.github/workflows/` — `deploy.yml`(Pages 배포), `refresh.yml`(평일 데이터 자동 갱신)
+- `.github/workflows/` — `deploy.yml`(Pages 배포), `refresh.yml`(한국 오전 7시, 미국 마감 후 전체 갱신),
+  `refresh_kr.yml`(한국 오후 6시, 코스피 마감 반영 — 저녁에 열어도 당일 지표가 보이게)
 
 ## 🖥️ 다른 컴퓨터에서 이어하기
 

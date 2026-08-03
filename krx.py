@@ -43,6 +43,11 @@ ALWAYS = [c.strip() for c in os.environ.get("SCREENER_ALWAYS", "").split(",") if
 # 야후 ^KS11은 하루 늦고 거래'량'만 주는데, KRX는 당일 고저가 + 거래'대금' + 시총을 준다
 # → 매물대 가중치가 저가주 왜곡 없는 거래대금이 되고, 회전율 분모까지 같은 소스로 맞춰진다.
 IDX_TARGETS = {"kospi": ("idx/kospi_dd_trd", "코스피"), "kosdaq": ("idx/kosdaq_dd_trd", "코스닥")}
+# 같은 종가를 indicator_raw에도 덮어쓴다 — 심리·유동성·물가·자산배분이 전부 여기서 읽는데,
+# ingest.py의 야후 값은 하루 늦어 '금요일 지수가 목요일로 보이는' 오독을 만들었다(실사용 지적).
+# refresh.yml에서 ingest.py 뒤에 돌므로 이 값이 이긴다. 2021-08 이전 이력은 야후분이 남는다
+# (KRX 백필 시작이 BACKFILL_START라서) — 두 소스 값이 같음은 확인했다.
+IDX_TO_INDICATOR = {"kospi": "kr_index", "kosdaq": "kr_kosdaq"}
 
 
 def get(path, bas_dd):
@@ -169,14 +174,17 @@ def run_stocks(force_start=None):
     today = date.today()
     r = sb.table("stock_daily").select("dt").order("dt", desc=True).limit(1).execute().data
     start = force_start or (date.fromisoformat(r[0]["dt"]) + timedelta(days=1) if r else BACKFILL_START)
-    codes = watchlist((today - timedelta(days=1)).strftime("%Y%m%d") if today.weekday() < 5
-                      else (today - timedelta(days=today.weekday() - 4)).strftime("%Y%m%d"))
+    # 워치리스트는 '직전 거래일'로 뽑는다. 월요일에 하루 전(=일요일)을 물으면 빈 응답이 와서
+    # 종목 0개로 스캔이 조용히 끝나 버린다 — 아침 크론은 화~토라 안 걸리지만 수동 실행에서 걸린다.
+    back = 3 if today.weekday() == 0 else (1 if today.weekday() < 5 else today.weekday() - 4)
+    codes = watchlist((today - timedelta(days=back)).strftime("%Y%m%d"))
     paths = sorted({MKT_PATH[m] for m, _h in codes.values()})
     shallow_from = today - timedelta(days=SHALLOW_DAYS)   # 2년 티어는 이 날짜부터만 저장
     print(f"[KR] 종목 {len(codes)}개 + 지수 {len(IDX_TARGETS)}종 · {start}~{today} "
           f"· 하루 {len(paths) + len(IDX_TARGETS)}콜")
 
     d, recs, calls, saved = start, [], 0, 0
+    idx_rows = []                          # 지수 종가 → indicator_raw 덮어쓰기용(야후 지연 보정)
     while d <= today:
         if d.weekday() < 5:                # 주말 스킵(휴일은 빈 응답)
             bas = d.strftime("%Y%m%d")
@@ -201,6 +209,9 @@ def run_stocks(force_start=None):
                                  "low": num(x["LWPRC_IDX"]), "close": num(x["CLSPRC_IDX"]),
                                  "tval": num(x["ACC_TRDVAL"]), "shares": None,
                                  "mktcap": num(x["MKTCAP"])})
+                    idx_rows.append({"market": "KR", "dt": d.isoformat(),
+                                     "code": IDX_TO_INDICATOR[key],
+                                     "value": num(x["CLSPRC_IDX"])})
                     break
                 calls += 1
                 time.sleep(0.15)
@@ -214,6 +225,16 @@ def run_stocks(force_start=None):
         sb.table("stock_daily").upsert(recs, on_conflict="code,dt").execute()
         saved += len(recs)
     print(f"[KR] 개별종목: 조회 {calls}콜 → {saved}행 적재")
+    # 지수 종가를 indicator_raw에 덮어쓴다(야후분보다 하루 빠른 값). 메타는 ingest.py가 이미
+    # 등록해 둬서 FK는 충족된다 — 실패해도 종목 적재를 되돌리지 않게 예외를 삼킨다.
+    if idx_rows:
+        try:
+            for i in range(0, len(idx_rows), 1000):
+                sb.table("indicator_raw").upsert(idx_rows[i:i + 1000],
+                                                 on_conflict="market,dt,code").execute()
+            print(f"[KR] 지수 종가 → indicator_raw {len(idx_rows)}행 (야후 지연 보정)")
+        except Exception as e:
+            print(f"[KR] 지수 종가 indicator_raw 적재 실패 — 야후 값 유지: {e}")
     # 2년 티어의 창을 벗어난 옛 행을 지운다. 안 지우면 매일 하루씩만 쌓여 1,545종목의
     # 히스토리가 해마다 1년씩 길어지고(=티어를 둔 의미가 사라지고) 용량이 계속 늘어난다.
     shallow = [c for c, (_m, h) in codes.items() if h == SHALLOW_DAYS]
