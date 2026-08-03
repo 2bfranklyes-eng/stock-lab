@@ -1620,15 +1620,16 @@ function PriceLine({ series, lo, hi, height }) {
   }).filter(Boolean).join(' ')
   const d = path((s) => s.close)
   const dr = path((s) => s.ref)
+  // 선 굵기는 CSS로 준다 — 모바일에선 화면이 좁고 막대 색이 진해 데스크톱 굵기로는 선이 묻힌다
+  // (특히 주체별 스택의 보라·청록 위에서 어두운 주가선이 안 보인다는 실사용 지적).
   return (
     <svg className="vp-overlay" viewBox={`0 0 100 ${height}`} preserveAspectRatio="none"
       aria-label="주가 추이">
       {/* 매물대 평균선(보유자 평단 추정) — 주가선 밑에 깔아 주가가 우선 읽히게 */}
-      {dr && <path d={dr} fill="none" stroke="#008300" strokeWidth="1.3" strokeDasharray="5 3"
-        opacity=".85" vectorEffect="non-scaling-stroke" />}
+      {dr && <path className="vp-refline" d={dr} fill="none" strokeDasharray="5 3" />}
       {/* 흰 테두리를 밑에 깔아 빨간·파란 막대 위에서도 선이 끊겨 보이지 않게 */}
-      <path d={d} fill="none" stroke="var(--card)" strokeWidth="3" vectorEffect="non-scaling-stroke" />
-      <path d={d} fill="none" stroke="#1f2937" strokeWidth="1.4" vectorEffect="non-scaling-stroke" />
+      <path className="vp-priceline-halo" d={d} fill="none" />
+      <path className="vp-priceline" d={d} fill="none" />
     </svg>
   )
 }
@@ -1655,8 +1656,14 @@ function rebinHolder(hRows, modelRows) {
   return max > 0 ? { bins, max } : null
 }
 
+const ZOOM_ROWS = 20               // 확대 시 보여줄 구간 수 — 60구간이면 3배 배율
+
 function ProfileBody({ rows, series, holder }) {
   const [hover, setHover] = useState(null)
+  // 확대: 가격축의 일부만 잘라 같은 높이에 펼친다(막대가 두꺼워짐). rows 기준 인덱스 범위.
+  const [zoom, setZoom] = useState(null)
+  // 종목·창을 바꾸면 확대·선택을 푼다 — 다른 가격대의 인덱스를 그대로 들고 있으면 엉뚱한 구간이 열린다
+  useEffect(() => { setZoom(null); setHover(null) }, [rows])
   // 주체별 겹침층 — 모델과 단위가 달라(전체 손바뀜 추정 vs 순매수 실측) 각자 최대값 기준으로
   // 정규화한다. 두 막대의 길이를 서로 비교하는 건 무의미하다 — 위치(어느 가격대인가)만 비교 대상.
   const hb = useMemo(() => rebinHolder(holder, rows), [holder, rows])
@@ -1664,21 +1671,36 @@ function ProfileBody({ rows, series, holder }) {
   const dt = rows[0].dt
   const daily = rows[0].daily_qty          // 최근 20일 평균 거래량(주)
   const vratio = rows[0].vol_ratio
-  const max = Math.max(...rows.map((r) => r.share))
   const mid = (r) => (r.bin_lo + r.bin_hi) / 2
   const above = rows.filter((r) => mid(r) > px)
   const upShare = above.reduce((s, r) => s + r.share, 0)
   const wall = above.length ? above.reduce((a, b) => (b.share > a.share ? b : a)) : null
   const upQty = above.reduce((s, r) => s + (r.qty || 0), 0)
   const fmt = (v) => Math.round(v).toLocaleString()
+  // 확대 중이면 그 구간만 그린다. off = 보이는 첫 줄의 전체 인덱스 — hover·hb·경로계산은
+  // 전부 '전체 인덱스'로 다뤄야 현재가가 화면 밖에 있어도 누적 물량이 맞게 나온다.
+  const canZoom = rows.length > ZOOM_ROWS + 4
+  const off = zoom ? zoom.from : 0
+  const shown = zoom ? rows.slice(zoom.from, zoom.to + 1) : rows
+  // 막대 길이는 '보이는 범위의 최대=1' — 확대하면 그 구간 안에서 다시 정규화된다(캡션에 명시)
+  const max = Math.max(...shown.map((r) => r.share))
   // 가격 라벨은 12개 안팎만 (90구간을 다 쓰면 겹쳐서 못 읽음)
-  const step = Math.max(1, Math.ceil(rows.length / 12))
-  // 현재가 표시선: 현재가가 속한 구간 위에 그린다
-  const nowIdx = rows.findIndex((r) => r.bin_lo <= px)
-  // rows는 고가→저가 순 — 막대 영역의 위·아래 끝이 곧 주가 차트의 y 범위가 된다
-  const hiEdge = rows[0].bin_hi
-  const loEdge = rows[rows.length - 1].bin_lo
+  const step = Math.max(1, Math.ceil(shown.length / 12))
+  // 현재가 표시선: 현재가가 속한 구간 위에 그린다 (확대로 화면 밖이면 안 그림)
+  const nowIdxFull = rows.findIndex((r) => r.bin_lo <= px)
+  const nowIdx = nowIdxFull - off
+  const nowVisible = nowIdx >= 0 && nowIdx < shown.length
+  // rows는 고가→저가 순 — 보이는 막대 영역의 위·아래 끝이 곧 주가 차트의 y 범위가 된다
+  const hiEdge = shown[0].bin_hi
+  const loEdge = shown[shown.length - 1].bin_lo
   const lastRef = series.length ? series[series.length - 1].ref : null
+
+  function zoomTo(i) {
+    if (!canZoom) return
+    const half = Math.floor(ZOOM_ROWS / 2)
+    const to = Math.min(rows.length - 1, Math.max(i + half, ZOOM_ROWS - 1))
+    setZoom({ from: Math.max(0, to - ZOOM_ROWS + 1), to })
+  }
   // 차트 높이는 막대 목록을 실측해 맞춘다. 막대 높이가 CSS(모바일 12px/데스크톱 9px)로
   // 달라지므로 상수로 계산하면 화면 폭에 따라 두 축이 어긋난다.
   const barsRef = useRef(null)
@@ -1695,8 +1717,9 @@ function ProfileBody({ rows, series, holder }) {
 
   // 현재가에서 그 구간까지 '지나가야 할' 물량. 위로 가면 저항, 아래로 가면 지지를 누적한다.
   // rows는 고가→저가 순이라 위쪽은 hover~nowIdx, 아래쪽은 nowIdx~hover 구간이 경로가 된다.
+  // 인덱스는 항상 '전체 기준' — 확대로 화면 밖이 된 구간도 경로에 포함돼야 누적이 맞다.
   function pathQty(i) {
-    const [a, b] = i < nowIdx ? [i, nowIdx] : [nowIdx, i]
+    const [a, b] = i < nowIdxFull ? [i, nowIdxFull] : [nowIdxFull, i]
     return rows.slice(a, b + 1).reduce((s, r) => s + (r.qty || 0), 0)
   }
 
@@ -1724,38 +1747,57 @@ function ProfileBody({ rows, series, holder }) {
         </div>
       )}
       <section className="card">
+        {canZoom && (
+          <div className="vp-zoombar">
+            {zoom ? (
+              <>
+                <span className="vp-zoomtag">🔍 {fmt(loEdge)}~{fmt(hiEdge)} 확대 중
+                  ({rows.length}구간 중 {shown.length})</span>
+                <button onClick={() => setZoom(null)}>전체 보기</button>
+              </>
+            ) : (
+              <span className="vp-zoomhint">막대를 누르면 그 가격대를 확대해서 봅니다</span>
+            )}
+          </div>
+        )}
         <div className="vp-wrap">
-          <div className="vp-bars" ref={barsRef}>
-            {rows.map((r, i) => (
-              // 모바일엔 커서가 없다 — 탭으로도 같은 정보가 뜨게 클릭을 함께 받는다
-              <div key={r.bin_lo} className={'vp-row' + (hover === i ? ' on' : '')}
-                onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}
-                onClick={() => setHover(hover === i ? null : i)}>
-                <span className="vp-price">{i % step === 0 ? fmt(r.bin_lo) : ''}</span>
-                {/* 래퍼가 있어야 주체별 스택을 모델 막대와 같은 왼쪽 끝에서 겹칠 수 있다 */}
-                <div className="vp-barwrap">
-                  <div className="vp-bar" style={{
-                    width: `${Math.max(0.5, r.share / max * 100)}%`,
-                    background: mid(r) > px ? '#c0392b' : '#2471a3',
-                  }} />
-                  {hb && hb.bins[i].total > 0 && (
-                    <div className="vp-hstack" style={{ width: `${hb.bins[i].total / hb.max * 100}%` }}>
-                      {HP_TYPES.map((t) => (hb.bins[i].by[t.key] || 0) > 0 && (
-                        <i key={t.key} style={{ flex: hb.bins[i].by[t.key], background: t.color }} />
-                      ))}
-                    </div>
-                  )}
+          <div className={'vp-bars' + (zoom ? ' vp-zoom' : '')} ref={barsRef}>
+            {shown.map((r, i) => {
+              const fi = i + off              // 전체 인덱스 — hover·주체별 겹침층·경로계산의 기준
+              return (
+                // 모바일엔 커서가 없다 — 탭으로도 같은 정보가 뜨게 클릭을 함께 받는다.
+                // 클릭은 그 가격대로 확대까지 한다(다시 누르면 그 자리를 중심으로 재확대).
+                <div key={r.bin_lo} className={'vp-row' + (hover === fi ? ' on' : '')}
+                  onMouseEnter={() => setHover(fi)} onMouseLeave={() => setHover(null)}
+                  onClick={() => { setHover(fi); zoomTo(fi) }}>
+                  <span className="vp-price">{i % step === 0 ? fmt(r.bin_lo) : ''}</span>
+                  {/* 래퍼가 있어야 주체별 스택을 모델 막대와 같은 왼쪽 끝에서 겹칠 수 있다 */}
+                  <div className="vp-barwrap">
+                    <div className="vp-bar" style={{
+                      width: `${Math.max(0.5, r.share / max * 100)}%`,
+                      background: mid(r) > px ? '#c0392b' : '#2471a3',
+                    }} />
+                    {hb && hb.bins[fi].total > 0 && (
+                      <div className="vp-hstack" style={{ width: `${hb.bins[fi].total / hb.max * 100}%` }}>
+                        {HP_TYPES.map((t) => (hb.bins[fi].by[t.key] || 0) > 0 && (
+                          <i key={t.key} style={{ flex: hb.bins[fi].by[t.key], background: t.color }} />
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
             {/* 주가선은 막대 위에 겹친다. 커서 판정은 막대가 받아야 하므로 pointer-events는 꺼둔다 */}
             {series.length > 1 && chartH > 0 && (
               <PriceLine series={series} lo={loEdge} hi={hiEdge} height={chartH} />
             )}
             {/* 현재가선도 절대배치 — 흐름에 끼우면 그만큼 아래 막대가 밀려 주가선과 눈금이 어긋난다 */}
-            <div className="vp-now" style={{ top: `${(nowIdx / rows.length) * 100}%` }}>
-              <span>현재가 {fmt(px)}</span>
-            </div>
+            {nowVisible && (
+              <div className="vp-now" style={{ top: `${(nowIdx / shown.length) * 100}%` }}>
+                <span>현재가 {fmt(px)}</span>
+              </div>
+            )}
           </div>
           {(series.length > 1 || hb) && (
             <div className="vp-chart-cap">
@@ -1797,8 +1839,15 @@ function ProfileBody({ rows, series, holder }) {
           아래면 물려 있는 상태예요.{' '}
           <b style={{ color: '#c0392b' }}>빨강</b> = 현재가 위(반등 시 본전 매도 압력) ·{' '}
           <b style={{ color: '#2471a3' }}>파랑</b> = 아래(하락 시 받치는 손바뀜 물량) ·
-          막대 길이 = 잔존 물량(최대=1). 막대가 짧은 곳은 <b>진공 구간</b> — 가격이 빠르게 지나가기 쉬워요.
-          <b> 막대를 누르거나 커서를 올리면</b> 거기까지 가는 데 며칠치 거래량이 필요한지 나옵니다.
+          막대 길이 = 잔존 물량({zoom ? '보이는 구간의 최대=1' : '최대=1'}). 막대가 짧은 곳은{' '}
+          <b>진공 구간</b> — 가격이 빠르게 지나가기 쉬워요.
+          <b> 막대를 누르면</b> 그 가격대가 확대되고, 거기까지 가는 데 며칠치 거래량이 필요한지 나옵니다.
+          {zoom && (
+            <>
+              {' '}<b>확대 중에는 막대 길이가 보이는 구간 안에서 다시 정규화</b>되므로, 전체
+              보기의 길이와 직접 비교하면 안 돼요(절대 수량은 아래 툴팁에 있습니다).
+            </>
+          )}
           {hb && (
             <>
               {' '}<b>가는 색 막대는 주체별 실측</b>(KRX 순매수 누적 — 아래 카드 참고) —
