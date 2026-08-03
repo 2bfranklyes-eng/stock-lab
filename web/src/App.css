@@ -207,6 +207,20 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .al-anchor { font-size: 11.5px; color: #64748b; }
 .al-anchor b { color: #1f2937; }
 .al-prod { font-size: 11px; color: #94a3b8; margin-top: auto; padding-top: 4px; }
+.al-seggap { width: 10px; }
+.al-scroll { overflow-x: auto; }   /* 6열 급락월 표 — 모바일에서 압착 대신 가로 스크롤 */
+/* 위기 리플레이 카드 */
+.al-epgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+.al-ep { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.al-ephead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-bottom: 7px; }
+.al-ephead > b { font-size: 13px; }
+.al-epsub { font-size: 11px; color: #94a3b8; width: 100%; }
+.al-live { font-size: 10px; font-weight: 700; color: #c0392b; border: 1px solid #c0392b;
+  border-radius: 8px; padding: 0 6px; }
+.al-eprow { display: grid; grid-template-columns: 1fr 52px 76px; gap: 6px; font-size: 11.5px;
+  padding: 2px 0; }
+.al-eprow span:nth-child(2) { font-weight: 700; text-align: right; }
+.al-eprow span:nth-child(3) { text-align: right; }
 
 /* ── 모바일: 세로로 쌓기 ── */
 @media (max-width: 640px) {

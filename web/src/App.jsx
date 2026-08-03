@@ -1985,6 +1985,17 @@ const ALLOC_ASSETS = [
     anchors: [] },
 ]
 
+// 위기 리플레이 카드 라벨 — 구간·기준주식은 allocation_shock.py의 EPISODES와 짝.
+const EPISODE_META = {
+  ep_2015yuan: { name: '2015 위안화 쇼크', bench: '코스피', period: '2015.07~08' },
+  ep_2018q4: { name: '2018 4분기 성장쇼크', bench: 'S&P500', period: '2018.09~12' },
+  ep_2020covid: { name: '2020 코로나 폭락', bench: 'S&P500', period: '2020.02~03' },
+  ep_2022rates: { name: '2022 인플레 긴축', bench: 'S&P500', period: '2022.01~10' },
+  ep_2024yen: { name: '2024 엔캐리 청산', bench: '코스피', period: '2024.07~08' },
+  ep_2026kr: { name: '2026 코스피 급락', bench: '코스피', period: '2026.06~', live: true },
+}
+const CORR_COLORS = { us_bond: '#2471a3', kr_bond: '#0f766e', gold: '#d97706', usdkrw: '#7c3aed' }
+
 // 가로 위치 미터: 0~100 위치에 점 하나. 게이지 2개를 나란히 두는 카드용(합성 점수 없음).
 function PosBar({ label, v, lo, hi }) {
   if (v == null) return null
@@ -2030,7 +2041,11 @@ function AllocationSection() {
   const [rg, setRg] = useState([])
   const [assets, setAssets] = useState([])
   const [stats, setStats] = useState([])
+  const [shock, setShock] = useState([])
+  const [corr, setCorr] = useState([])
   const [h, setH] = useState(20)
+  const [ccy, setCcy] = useState('loc')          // 성적표: 자산통화 | 원화 환산
+  const [sb2, setSb2] = useState('KR')           // 충격완화: 기준주식 코스피 | S&P
 
   useEffect(() => {
     let alive = true
@@ -2053,6 +2068,18 @@ function AllocationSection() {
         const { data: s } = await supabase.from('asset_regime_stats').select('*')
         if (alive && s) setStats(s)
         setState('ok')
+        // 충격완화 통계 + 상관 시계열은 뒤에 와도 되는 부가 데이터 — 테이블이 아직 없으면 조용히 생략
+        const { data: sh } = await supabase.from('asset_shock_stats').select('*')
+        if (alive && sh) setShock(sh)
+        // 상관 차트: 자산 4종 × 최근 3년 — 요청당 1,000행 상한이라 자산별로 나눠 받는다
+        const cs = []
+        for (const ak of ['us_bond', 'kr_bond', 'gold', 'usdkrw']) {
+          const { data: c } = await supabase.from('asset_daily')
+            .select('asset,dt,corr63_us,corr63_kr').eq('asset', ak)
+            .order('dt', { ascending: false }).limit(756)
+          if (c) cs.push(...c.reverse())
+        }
+        if (alive) setCorr(cs)
       } catch (e) {
         if (!alive) return
         const msg = `${e?.message || ''} ${e?.code || ''}`
@@ -2061,6 +2088,19 @@ function AllocationSection() {
     })()
     return () => { alive = false }
   }, [])
+
+  // 상관 차트 데이터: 기준주식(sb2) 선택에 따라 corr63_us/kr 중 하나를 자산별 열로 편다
+  const corrRows = useMemo(() => {
+    const key = sb2 === 'US' ? 'corr63_us' : 'corr63_kr'
+    const lines = sb2 === 'US' ? ['us_bond', 'gold', 'usdkrw'] : ['kr_bond', 'gold', 'usdkrw']
+    const m = new Map()
+    for (const r of corr) {
+      if (!lines.includes(r.asset) || r[key] == null) continue
+      if (!m.has(r.dt)) m.set(r.dt, { dt: r.dt })
+      m.get(r.dt)[r.asset] = Number(r[key])
+    }
+    return { rows: [...m.values()].sort((a, b) => (a.dt < b.dt ? -1 : 1)), lines }
+  }, [corr, sb2])
 
   if (state !== 'ok') {
     return (
@@ -2079,9 +2119,14 @@ function AllocationSection() {
   const last = rg[rg.length - 1]
   const quad = QUAD_META[last.quadrant] || {}
   const byAsset = new Map(assets.map((a) => [a.asset, a]))
-  const stat = (regime, asset) => stats.find((s) => s.regime === regime && s.asset === asset)
+  // ccy 필터 필수 — 같은 (국면, 자산)에 자산통화/원화 두 행이 산다. 옛 데이터(ccy 없던 시절)는 loc 취급.
+  const stat = (regime, asset) => stats.find((s) =>
+    s.regime === regime && s.asset === asset && (s.ccy || 'loc') === ccy)
   const fmt1 = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${Number(v).toFixed(1)}%`)
   const curEp = stats.find((s) => s.regime === last.quadrant)?.n_episodes
+  const crash = shock.filter((s) => s.scope === 'crash10' && s.basis === sb2)
+  const crashBench = crash.find((s) => s.asset === (sb2 === 'US' ? 'us_index' : 'kr_index'))
+  const epScopes = Object.keys(EPISODE_META).filter((k) => shock.some((s) => s.scope === k))
 
   return (
     <>
@@ -2124,6 +2169,9 @@ function AllocationSection() {
           {HORIZONS.map((n) => (
             <button key={n} className={h === n ? 'on' : ''} onClick={() => setH(n)}>{n}일</button>
           ))}
+          <span className="al-seggap" />
+          <button className={ccy === 'loc' ? 'on' : ''} onClick={() => setCcy('loc')}>자산통화</button>
+          <button className={ccy === 'krw' ? 'on' : ''} onClick={() => setCcy('krw')}>원화 환산</button>
         </div>
         <table className="al-table">
           <thead><tr><th>자산</th><th>현 국면 이후{h}일</th><th>승률</th><th>전체 기간</th></tr></thead>
@@ -2147,7 +2195,138 @@ function AllocationSection() {
           겹치는 날들은 독립 표본이 아니라서, <b>통계라기보다 사례 모음</b>으로 읽어야 해요.
           '전체 기간' 열이 비교 기준(무조건부 평균)입니다. ⚠️ 표시(비트코인)는 이력 전체가
           상승기라 국면과 무관하게 평균이 높게 나오는 자산이에요.
+          {ccy === 'krw' && (
+            <>
+              {' '}<b>원화 환산</b> = 달러자산 가격 × 원/달러 — 자산 손익에 환율 손익까지 합친
+              원화 투자자의 체감 수익입니다(원화 자산은 그대로).
+            </>
+          )}
         </p>
+      </section>
+
+      <section className="card">
+        <h2>🛡️ 주식이 깨질 때 뭐가 버텨줬나</h2>
+        {!shock.length ? (
+          <div className="col-msg soon">🚧<br /><b>데이터 준비 중</b><br />
+            <span>sql/asset_shock_stats.sql 실행 + allocation_shock.py 적재 필요</span></div>
+        ) : (
+          <>
+            <div className="seg">
+              <button className={sb2 === 'KR' ? 'on' : ''} onClick={() => setSb2('KR')}>🇰🇷 코스피 급락월</button>
+              <button className={sb2 === 'US' ? 'on' : ''} onClick={() => setSb2('US')}>🇺🇸 S&P 급락월</button>
+            </div>
+            <p className="cap">
+              {sb2 === 'KR' ? '코스피' : 'S&P500'}의 월수익 하위 10% 달({crashBench?.n ?? '—'}달,
+              그달 평균 {fmt1(crashBench?.stock_ret)}) — 그 달에 각 자산은 어땠나.
+            </p>
+            <div className="al-scroll">
+              <table className="al-table">
+                <thead><tr><th>자산</th><th>같은 달 평균</th><th>중앙값</th><th>버틴 비율</th><th>최악의 달</th><th>원화 환산 평균</th></tr></thead>
+                <tbody>
+                  {ALLOC_ASSETS.map((m) => {
+                    const s = crash.find((x) => x.asset === m.key)
+                    if (!s) return null
+                    return (
+                      <tr key={m.key}>
+                        <td>{m.emoji} {m.name}</td>
+                        <td style={{ color: s.ret_avg > 0 ? '#c0392b' : '#2471a3' }}>{fmt1(s.ret_avg)}</td>
+                        <td>{fmt1(s.ret_med)}</td>
+                        <td>{s.hit == null ? '—' : `${Math.round(s.hit)}%`}</td>
+                        <td className="al-dim">{fmt1(s.worst)}</td>
+                        <td style={{ color: s.ret_krw > 0 ? '#c0392b' : '#2471a3' }}>{fmt1(s.ret_krw)}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="note">
+              <b>{crashBench?.n ?? 14}달뿐 — 통계라기보다 사례 모음입니다.</b> '하위 10%'는 전체
+              이력으로 정한 <b>사후 기준</b>이라 예측 규칙이 아니라 과거 묘사이고, 데이터가 쌓이면
+              급락월 목록 자체가 다시 그려집니다. <b>원화 환산</b> 열이 달러자산과 크게 다르면
+              그 차이가 환율 완충('환율 방패')입니다.
+            </p>
+
+            <h2 style={{ marginTop: 18 }}>📼 위기 리플레이 — 방어재는 위기마다 달랐다</h2>
+            <div className="al-epgrid">
+              {epScopes.map((scope) => {
+                const meta = EPISODE_META[scope]
+                const rows = shock.filter((s) => s.scope === scope)
+                  .sort((a, b) => b.ret_avg - a.ret_avg)
+                const bench = rows[0]?.stock_ret
+                return (
+                  <div key={scope} className="al-ep">
+                    <div className="al-ephead">
+                      <b>{meta.name}</b>{meta.live && <span className="al-live">진행 중</span>}
+                      <span className="al-epsub">{meta.period} · {meta.bench} <b style={{ color: '#2471a3' }}>{fmt1(bench)}</b></span>
+                    </div>
+                    {rows.map((s) => {
+                      const m = ALLOC_ASSETS.find((x) => x.key === s.asset)
+                      if (!m) return null
+                      return (
+                        <div key={s.asset} className="al-eprow"
+                          title={s.mdd != null ? `구간 내 최대낙폭 ${fmt1(s.mdd)}` : undefined}>
+                          <span>{m.emoji} {m.name}</span>
+                          <span style={{ color: s.ret_avg > 0 ? '#c0392b' : '#2471a3' }}>{fmt1(s.ret_avg)}</span>
+                          <span className="al-dim">원화 {fmt1(s.ret_krw)}</span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )
+              })}
+            </div>
+            <p className="note">
+              기준주식 고점→저점 구간(2026은 진행 중)의 누적수익 · <b>결과를 알고 고른 위기
+              목록</b>이라는 선택 편향이 있습니다. 그래도 표가 말해주는 건 분명해요 —
+              2015·2020·2024는 미국채가, 2018은 금이, <b>2022는 채권이 무너지고 원자재와
+              환율(원달러 +20%)이</b>, 2026(지금)은 원자재만 버티고 <b>원화 강세라 환율 방패도
+              없다</b>는 것. 항상 통하는 방어재는 없었습니다.
+            </p>
+
+          </>
+        )}
+        {/* 상관 차트는 shock 통계와 별개 데이터(asset_daily) — 밖에 둬야 한쪽만 준비돼도 뜬다 */}
+        {corrRows.rows.length > 20 && (
+          <>
+            <h2 style={{ marginTop: 18 }}>🔗 주식과의 상관 (63일 롤링)</h2>
+            <div style={{ width: '100%', height: 180 }}>
+              <ResponsiveContainer>
+                <LineChart data={corrRows.rows} margin={{ top: 4, right: 8, bottom: 0, left: -18 }}>
+                  <CartesianGrid strokeDasharray="2 4" stroke="var(--line)" />
+                  <XAxis dataKey="dt" tick={{ fontSize: 10 }} interval="preserveStartEnd"
+                    minTickGap={80} tickFormatter={(d) => d.slice(2, 7)} />
+                  <YAxis domain={[-1, 1]} ticks={[-1, -0.5, 0, 0.5, 1]} tick={{ fontSize: 10 }} />
+                  <ReferenceLine y={0} stroke="#94a3b8" />
+                  <Tooltip formatter={(v) => Number(v).toFixed(2)} labelStyle={{ fontSize: 11 }} />
+                  {corrRows.lines.map((k) => (
+                    // connectNulls 필수 — 자산마다 휴장일이 달라(한국 개장·미국 휴장 등) 합집합
+                    // 날짜에 구멍이 생기고, 기본값(false)이면 선이 수십 곳에서 조각난다
+                    <Line key={k} dataKey={k} dot={false} strokeWidth={1.6} connectNulls
+                      stroke={CORR_COLORS[k]} isAnimationActive={false}
+                      name={ALLOC_ASSETS.find((x) => x.key === k)?.name || k} />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="vp-chart-cap">
+              <span className="hp-legend">
+                {corrRows.lines.map((k) => (
+                  <span key={k}><i style={{ background: CORR_COLORS[k] }} />
+                    {ALLOC_ASSETS.find((x) => x.key === k)?.name || k}</span>
+                ))}
+              </span>
+            </div>
+            <p className="note">
+              {sb2 === 'KR' ? '코스피' : 'S&P500'}와 각 자산의 <b>최근 63일 일수익 상관</b>.
+              0 아래면 주식이 흔들릴 때 반대로 움직이는 경향 = 헤지 성질. 이 선은 고정이 아니라
+              <b> 시대마다 바뀝니다</b> — 2022년 채권 선이 0 위로 올라간 게(주식과 같이 하락)
+              '채권=안전'이 항상은 아니라는 증거예요. ⚠️ 한국과 미국은 <b>장 마감 시각이 달라</b>
+              같은 날짜끼리 맞춘 상관은 실제보다 0 쪽으로 약하게 잡힐 수 있습니다(코스피 낮,
+              미국 밤 — 하루 시차 반영 전).
+            </p>
+          </>
+        )}
       </section>
 
       <section className="card">
@@ -2192,8 +2371,9 @@ function AllocationSection() {
           <li><b>조언이 아닙니다</b> — 배분 비율·매수 신호를 만들지 않고, 현재 위치와 과거 통계만 보여줍니다.</li>
           <li><b>국면은 사후에 다시 그려질 수 있어요</b> — 성분 검증에 쓴 역사적 기준일(2020 코로나 등 6건)은
             '아는 역사'에 맞춘 확인이라, 미래에도 맞는다는 보장이 아닙니다.</li>
-          <li><b>수익률은 각 자산의 표시통화 기준</b> — 원화 투자자의 체감(환율 포함)은 다음 단계에서
-            원화 환산으로 추가 예정입니다. 급락기엔 원/달러 상승이 달러 자산 손실을 완충하곤 했어요.</li>
+          <li><b>원화 환산 = 가격 × 원/달러</b> — 성적표 토글과 충격완화 표의 '원화' 열이 그것입니다.
+            급락기엔 원/달러 상승이 달러 자산 손실을 완충하곤 했지만(2022), 원화가 강세인 급락(2026)에선
+            방패가 없어요 — 환율 완충도 '항상'이 아닙니다.</li>
           <li><b>2022년을 기억하세요</b> — 채권이 주식과 같이 무너진 해. 방어재는 국면마다 달랐고,
             그래서 이 탭은 '항상 통하는 답' 대신 국면별 기록을 보여줍니다.</li>
         </ul>

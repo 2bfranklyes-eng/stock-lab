@@ -15,7 +15,8 @@ Supabase(방과후와 별도 프로젝트) + Python 파이프라인 + React 대�
 - `inflation_backtest.py` — 물가 밴드별 이후수익률 검증 → `inflation_backtest_stats`
 - `holders.py` — 주체별(개인·외국인·기관) 순매수 누적 매물대 → `investor_flow`(캐시)·`holder_profile` (KRX 정보데이터시스템 로그인 필요). 시총 상위 200 + `SCREENER_ALWAYS`
 - `allocation.py` — 자산배분 국면(성장기대=구리/금 모멘텀 × 물가=I(t) 스냅샷) + 자산 8종 위치 점수 → `regime_daily`·`asset_daily`
-- `allocation_backtest.py` — 국면별 자산 이후수익률 통계(n_episodes 병기) → `asset_regime_stats`
+- `allocation_backtest.py` — 국면별 자산 이후수익률 통계(n_episodes 병기, 자산통화·원화 환산) → `asset_regime_stats`
+- `allocation_shock.py` — 충격완화 통계: 주식 급락월 조건표 + 위기 리플레이 6건(원화 환산 병기) → `asset_shock_stats`
 - `crossval.py` / `crossval_models.py` — 매물대 모델을 투자자 실측(B)과 대조 검증 (로컬 전용)
 - `sql/` — 테이블 DDL(수동 생성용). 새 테이블 추가 시 여기 SQL을 Supabase SQL Editor에 실행
 - `plot.py` — 로컬 검증용 그래프 (matplotlib)

@@ -2,7 +2,7 @@
 -- 기존 밴드 백테스트(backtest_stats 등)와 같은 문법: 이후 N일 수익 평균 + 승률 + 표본수.
 -- n_days와 별도로 n_episodes(그 국면이 연속 블록으로 몇 번 있었나)를 병기한다 —
 -- 겹치는 창은 독립 표본이 아니라서, n_days가 커 보여도 에피소드 몇 번이면 '사례 모음'이다.
--- ccy: 'loc'=자산 표시통화 기준. (원화 환산은 다음 단계에서 'krw'로 추가할 자리)
+-- ccy: 'loc'=자산 표시통화 / 'krw'=원화 환산(달러자산 가격×원달러, 원화자산은 loc와 동일 복제)
 -- Supabase SQL editor에서 1회 실행.
 create table if not exists asset_regime_stats (
   regime   text not null,               -- g_up_i_dn / g_up_i_up / g_dn_i_up / g_dn_i_dn / all

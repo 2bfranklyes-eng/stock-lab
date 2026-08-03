@@ -27,6 +27,9 @@ sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"
 from allocation import fetch_codes, deglitch, ASSETS, GLITCH_FILTER  # noqa: E402  같은 재료·같은 필터
 
 HORIZONS = [5, 10, 20, 30, 60]
+# 달러 표시 자산 — 원화 환산(ccy='krw')은 가격×원/달러로 만든다. 원화 자산은 loc 값 그대로
+# 복제해 넣는다(웹 토글이 자산마다 행이 있고 없고를 신경쓰지 않도록).
+USD_ASSETS = {"gold", "us_bond", "dbc", "us_index", "btc"}
 
 
 def fetch_regime():
@@ -60,28 +63,32 @@ def main():
     w["dt"] = pd.to_datetime(w["dt"])
     w = w.drop_duplicates(subset=["dt", "code"]).pivot(index="dt", columns="code", values="value")
 
+    krw = w["usdkrw"].dropna()
     stats = []
     for a in ASSETS:
         px = w[a].dropna()
         if a in GLITCH_FILTER:
             px = deglitch(px)
-        # 국면 달력에 정렬 — BTC(365일 거래)도 국면이 정의된 거래일 기준으로 본다.
-        # 국면 시작 전 이력(2015~2017, 백분위 창 축적기)은 국면이 없으므로 자연히 빠진다.
-        px = px.reindex(rg.index, method="ffill")
-        fwd = {n: (px.shift(-n) / px - 1) * 100 for n in HORIZONS}
-        for regime in list(rg["quadrant"].unique()) + ["all"]:
-            mask = (rg["quadrant"] == regime) if regime != "all" else pd.Series(True, index=rg.index)
-            row = {"regime": regime, "asset": a, "ccy": "loc",
-                   "n_days": int(mask.sum()), "n_episodes": episodes(mask)}
-            for n in HORIZONS:
-                f = fwd[n][mask].dropna()
-                row[f"fwd{n}"] = round(float(f.mean()), 2) if len(f) else None
-                row[f"hit{n}"] = round(float((f > 0).mean() * 100), 1) if len(f) else None
-            stats.append(row)
+        for ccy in ("loc", "krw"):
+            # 원화 환산: 달러자산은 가격×원/달러 — 환율 손익까지 합친 '원화 투자자의 체감 수익'
+            p = px * krw.reindex(px.index, method="ffill") if (ccy == "krw" and a in USD_ASSETS) else px
+            # 국면 달력에 정렬 — BTC(365일 거래)도 국면이 정의된 거래일 기준으로 본다.
+            # 국면 시작 전 이력(2015~2017, 백분위 창 축적기)은 국면이 없으므로 자연히 빠진다.
+            p = p.reindex(rg.index, method="ffill")
+            fwd = {n: (p.shift(-n) / p - 1) * 100 for n in HORIZONS}
+            for regime in list(rg["quadrant"].unique()) + ["all"]:
+                mask = (rg["quadrant"] == regime) if regime != "all" else pd.Series(True, index=rg.index)
+                row = {"regime": regime, "asset": a, "ccy": ccy,
+                       "n_days": int(mask.sum()), "n_episodes": episodes(mask)}
+                for n in HORIZONS:
+                    f = fwd[n][mask].dropna()
+                    row[f"fwd{n}"] = round(float(f.mean()), 2) if len(f) else None
+                    row[f"hit{n}"] = round(float((f > 0).mean() * 100), 1) if len(f) else None
+                stats.append(row)
 
     cur = rg["quadrant"].iloc[-1]
     print(f"현재 국면: {cur} · 국면 이력 {rg.index[0].date()} ~ {rg.index[-1].date()}")
-    view = pd.DataFrame([s for s in stats if s["regime"] in (cur, "all")])
+    view = pd.DataFrame([s for s in stats if s["regime"] in (cur, "all") and s["ccy"] == "loc"])
     print(view[["regime", "asset", "n_days", "n_episodes", "fwd20", "hit20"]].to_string(index=False))
 
     if dry:

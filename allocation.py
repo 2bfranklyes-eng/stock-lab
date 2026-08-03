@@ -138,9 +138,20 @@ def compute_regime(w, iscore):
     return out
 
 
+def roll_corr(ra, rb, win=63, minp=40):
+    """두 일수익 시계열의 롤링 상관 — 거래일이 다른 자산(BTC 365일 등)은 교집합 날짜로 맞춘다."""
+    d = pd.concat([ra, rb], axis=1, join="inner").dropna()
+    if d.empty:
+        return pd.Series(dtype="float64")
+    return d.iloc[:, 0].rolling(win, min_periods=minp).corr(d.iloc[:, 1])
+
+
 def compute_assets(w):
     """자산별 c_trend/c_heat + raw + 앵커. 각 자산은 자기 거래일 달력으로 계산(BTC는 365일)."""
     real = w.get("us_real10y")
+    # 주식과의 63일 상관용 기준 수익 — '채권이 주식을 헤지하는 시기인가'는 시대마다 바뀐다(2022 양전환)
+    r_us = w["us_index"].dropna().pct_change()
+    r_kr = w["kr_index"].dropna().pct_change()
     frames = {}
     for a in ASSETS:
         px = w[a].dropna()
@@ -148,10 +159,13 @@ def compute_assets(w):
             px = deglitch(px)
         mom = px.shift(21) / px.shift(252) - 1          # 12-1 모멘텀(최근 1달 제외 — 반전 노이즈 컷)
         heat = px / px.rolling(200, min_periods=120).mean() - 1
+        ra = px.pct_change()
         out = pd.DataFrame({
             "c_trend": pct_rank(mom), "c_heat": pct_rank(heat), "raw_px": px,
             "raw_dd252": (px / px.rolling(252, min_periods=120).max() - 1) * 100,
             "raw_r12m": (px / px.shift(252) - 1) * 100,
+            "corr63_us": roll_corr(ra, r_us).reindex(px.index),
+            "corr63_kr": roll_corr(ra, r_kr).reindex(px.index),
         })
         # 앵커 — 자산마다 의미가 다른 참고 실수치 (sql/asset_daily.sql 주석과 웹 ASSET_META가 정의)
         if a == "gold" and real is not None:
@@ -244,7 +258,9 @@ def main():
                           "raw_px": rnd(r.raw_px, 4), "raw_dd252": rnd(r.get("raw_dd252")),
                           "raw_r12m": rnd(r.get("raw_r12m")),
                           "anchor_a": rnd(r.get("anchor_a")), "anchor_b": rnd(r.get("anchor_b")),
-                          "anchor_c": rnd(r.get("anchor_c")), "anchor_d": rnd(r.get("anchor_d"))})
+                          "anchor_c": rnd(r.get("anchor_c")), "anchor_d": rnd(r.get("anchor_d")),
+                          "corr63_us": rnd(r.get("corr63_us"), 3),
+                          "corr63_kr": rnd(r.get("corr63_kr"), 3)})
     for i in range(0, len(arows), 1000):
         sb.table("asset_daily").upsert(arows[i:i + 1000], on_conflict="asset,dt").execute()
     print(f"asset_daily 적재: {len(arows)}행 ({len(frames)}자산)")

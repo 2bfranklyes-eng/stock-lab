@@ -38,6 +38,7 @@ jobs:
       - run: python inflation_backtest.py  # 물가 밴드별 통계 → inflation_backtest_stats
       - run: python allocation.py    # 자산배분 국면 + 자산 위치 점수 → regime_daily·asset_daily (inflation 다음)
       - run: python allocation_backtest.py  # 국면별 자산 통계 → asset_regime_stats
+      - run: python allocation_shock.py     # 충격완화 통계(급락월·위기 리플레이) → asset_shock_stats
       - run: python fuel.py          # F(t) 실탄 지수 (미국 주간 FRED / 한국 월간 ECOS) → fuel_index
       - run: python fuel_backtest.py  # 실탄 밴드별 통계 → fuel_backtest_stats
       - run: python ai_cycle.py      # AI 사이클 계기판 (반도체 밸류체인 상대강도) → ai_daily
