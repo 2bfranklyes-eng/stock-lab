@@ -412,3 +412,13 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 /* 빈도 뱃지 (한국 실탄 '월간' 표시) */
 .freq-badge { display: inline-block; margin-left: 7px; padding: 1px 8px; font-size: 10px; font-weight: 700;
   border-radius: 999px; background: #fde68a; color: #92400e; vertical-align: middle; letter-spacing: .02em; }
+
+/* 수집 지연 경고 — 게이지 바로 위. 날짜만 작게 적어두면 옛 값을 현재로 읽게 되므로,
+   숫자를 보기 전에 눈에 걸리도록 게이지와 같은 폭의 배너로 둔다. */
+.stale-warn { margin: 8px 0 12px; padding: 9px 12px; border-radius: 8px; font-size: 12.5px;
+  line-height: 1.55; background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+
+/* 공표 지연 설명 — '정상이지만 과거를 가리킨다'는 안내라 경고색을 쓰지 않는다.
+   경고(.stale-warn)와 같은 노랑을 쓰면 상시 경보가 되어 진짜 경고가 묻힌다. */
+.lag-note { margin: 8px 0 12px; padding: 9px 12px; border-radius: 8px; font-size: 12.5px;
+  line-height: 1.55; background: var(--track); color: #475569; border: 1px solid transparent; }

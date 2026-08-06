@@ -29,7 +29,11 @@ const BAND_DESC = {
 }
 const STAT_ORDER = ['극단공포', '공포', '중립', '탐욕', '극단탐욕', '전체']
 const SENT_STATS_NOTE = (
-  <><b>극단공포</b> 뒤 반등이 뚜렷(역발상 엣지), <b>극단탐욕</b>은 밋밋. 20거래일 ≈ 1달. (표본 적어 참고용)</>
+  <><b>극단공포</b> 뒤 반등이 뚜렷(역발상 엣지), <b>극단탐욕</b>은 밋밋. 20거래일 ≈ 1달.
+    <br />⚠️ <b>'일수'가 아니라 '사건 수'를 보세요.</b> 붙어있는 날들은 사실상 한 사건이라,
+    86일이어도 사건이 9개면 근거는 <b>9개</b>입니다.
+    게다가 이 평균은 <b>일수 가중</b>이라 오래 끈 사건이 지배해요 — 사건마다 진입일 하루씩만
+    재면 공포·탐욕 차이는 훨씬 작아집니다. <b>진입 신호가 아니라 상태 기록</b>으로 읽으세요.</>
 )
 
 // 추이 그래프의 선들. 성분(변동성·모멘텀·안전자산선호·시장폭)은 s_score를 이루는 4재료.
@@ -158,8 +162,12 @@ const F_BAND_DESC = {
 }
 const F_STAT_ORDER = ['고갈', '부족', '중립', '여유', '풍부', '전체']
 const FUEL_STATS_NOTE = (
-  <>각 표본 = 실탄 진입 시점(🇺🇸 20거래일 간격 · 🇰🇷 매월초 — 서로 <b>안 겹치는 독립 구간</b>). <b>'이후 N일'</b>은 그 시점부터 <b>N거래일</b>(20일 ≈ 1달) 뒤 시장 수익률이에요.
-    실탄이 <b>풍부</b>할 때 순풍인지, <b>고갈</b>일 때 바닥인지 — 느린 배경 지표라 참고용.</>
+  <>각 표본 = 실탄 진입 시점(🇺🇸 20거래일 간격 · 🇰🇷 매월초). <b>'이후 N일'</b>은 그 시점부터 <b>N거래일</b>(20일 ≈ 1달) 뒤 시장 수익률이에요.
+    실탄이 <b>풍부</b>할 때 순풍인지, <b>고갈</b>일 때 바닥인지 — 느린 배경 지표라 참고용.
+    <br />⚠️ 표본이 안 겹쳐도 <b>연달아 같은 밴드면 사실상 한 사건</b>이라 '사건 수'를 함께 보세요.
+    한 자릿수면 통계가 아니라 사례 모음입니다.
+    <br />⚠️ 🇰🇷는 <b>월간 데이터를 월초에 붙인</b> 값이에요. M2 말잔·순매수는 그 달이 끝나야 확정되니
+    (M2는 약 2개월 뒤 공표) 실제로는 못 썼을 정보가 섞입니다 — 수치가 실제보다 유리하게 나옵니다.</>
 )
 // 실탄 차트 구간 프리셋 — 미국=주간·한국=월간이라 슬라이스 '행 수'가 다름
 const F_RANGES_US = [{ label: '1년', days: 52 }, { label: '3년', days: 156 }, { label: '5년', days: 260 }, { label: '전체', days: Infinity }]
@@ -686,10 +694,14 @@ function StatsCard({ stats, order = STAT_ORDER, note = SENT_STATS_NOTE, countLab
             if (!s) return null
             const v = s[`fwd${h}`]
             const hit = s[`hit${h}`]
+            // 일수(표본)만 크게 보이면 근거가 부풀어 보인다 — 독립 사건 수를 함께 적는다
+            const cnt = (
+              <td>{s.n}{s.n_episodes != null && <span className="runs">사건 {s.n_episodes}</span>}</td>
+            )
             if (v == null) {
               return (
                 <tr key={bd} className={bd === '전체' ? 'base' : ''}>
-                  <td>{bd}</td><td>{s.n}</td><td>—</td><td>—</td>
+                  <td>{bd}</td>{cnt}<td>—</td><td>—</td>
                 </tr>
               )
             }
@@ -697,7 +709,7 @@ function StatsCard({ stats, order = STAT_ORDER, note = SENT_STATS_NOTE, countLab
             return (
               <tr key={bd} className={bd === '전체' ? 'base' : ''}>
                 <td>{bd}</td>
-                <td>{s.n}</td>
+                {cnt}
                 <td style={{ color, fontWeight: v > 2 || v < 0 ? 700 : 400 }}>
                   {v > 0 ? '+' : ''}{v}%
                 </td>
@@ -993,9 +1005,29 @@ function FuelFigures({ latest, market }) {
 function FuelBody({ latest, series, stats, market }) {
   const b = fuelBandOf(latest.f_score)
   const monthly = latest.freq === 'M'
+  // 실탄의 '늦음'은 두 종류다. 섞으면 안 된다.
+  //  ① 공표 지연 — 한국은행 M2 말잔은 원래 2~3개월 뒤에 나온다(8월에 5월치). 크론이 멀쩡해도
+  //     KR은 늘 90일 안팎 과거를 가리킨다. 이걸 경고로 띄우면 배너가 상시 켜져 아무도 안 본다.
+  //  ② 수집 중단 — 크론이 멈춰 공표된 것마저 못 받은 경우. 경고는 이때만.
+  // 그래서 ①은 항상 담담히 설명하고, ②는 한 주기를 통째로 놓쳤을 때만 경고한다.
+  const staleDays = Math.floor((Date.now() - new Date(latest.dt).getTime()) / 86400000)
+  const stale = staleDays > (monthly ? 135 : 21)
   return (
     <>
       <p className="col-date">{latest.dt} 기준{monthly && <span className="freq-badge">월간</span>}</p>
+      {stale && (
+        <p className="stale-warn">
+          ⚠️ 공표 지연을 감안해도 <b>{staleDays}일 전</b> 값이에요. 수집이 멈췄을 수 있으니
+          <b> 지금 상태로 읽지 마세요.</b>
+        </p>
+      )}
+      {monthly && !stale && (
+        <p className="lag-note">
+          한국은행 <b>M2 공표가 2~3개월 늦어</b> 이 값은 <b>{latest.dt.slice(0, 7)}</b> 기준이에요
+          (수집은 정상 — 나오는 대로 받습니다). 실탄은 원래 <b>느린 배경 지표</b>라, 오늘의 시장이
+          아니라 <b>돈이 깔린 판</b>을 보는 칸입니다.
+        </p>
+      )}
       <Gauge value={latest.f_score} band={b} lowLabel="고갈" highLabel="풍부" desc={F_BAND_DESC[b.name]} />
       <FuelFigures latest={latest} market={market} />
       {market === 'US' ? (

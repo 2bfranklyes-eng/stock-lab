@@ -49,11 +49,23 @@ def run(market):
     print(f"[{market}] 기간: {m['dt'].min().date()} ~ {m['dt'].max().date()}  ({len(m)}일)")
     print(f"[{market}] S(t) 밴드별 '이후 수익률' (진입 시점 심리 → 이후 시장):")
 
+    def episodes(band):
+        """그 밴드에 머문 '연속 블록' 수 = 독립 사건 수.
+        일수는 독립 표본이 아니다 — 겹치는 20일 창을 매일 세면 한 사건이 수십 번 계상된다.
+        (allocation_backtest.py 와 같은 문법. 웹 표에도 병기한다.)"""
+        f = m["band"] == band
+        return int((f & ~f.shift(fill_value=False)).sum())
+
     def summary(label, d):
-        row = {"밴드": label, "일수": len(d)}
+        row = {"밴드": label, "일수": len(d),
+               "사건": "—" if "전체" in label else episodes(label)}
         for h in HORIZONS:
-            row[f"이후{h}일"] = round(d[f"fwd{h}"].mean() * 100, 1)
-        row["20일승률"] = round((d["fwd20"] > 0).mean() * 100, 0)
+            # ⚠️ dropna 필수 — 최근 h일은 아직 미래가 없어 fwd가 NaN이고,
+            #    NaN > 0 은 False라 그냥 세면 '패배'로 잡혀 승률이 과소평가된다.
+            f = d[f"fwd{h}"].dropna()
+            row[f"이후{h}일"] = round(f.mean() * 100, 1) if len(f) else None
+        f20 = d["fwd20"].dropna()
+        row["20일승률"] = round((f20 > 0).mean() * 100, 0) if len(f20) else None
         return row
 
     rows = [summary(b, m[m["band"] == b]) for b in ORDER if len(m[m["band"] == b])]
@@ -66,16 +78,28 @@ def run(market):
     verdict = "✅ 역발상 엣지 있음" if fear > greed else "❌ 엣지 없음/역방향"
     print(f"▶ [{market} 핵심] 극단공포 − 극단탐욕 (이후 20일): {fear - greed:+.1f}%p  →  {verdict}")
 
+    # ⚠️ 위 스프레드는 '일수 가중'이라 긴 에피소드가 지배한다. 사건당 1건(진입일)으로 다시 재면
+    #    보통 훨씬 작아진다 — 신호가 '진입 시점'이 아니라 '공포가 오래 지속된 뒤'에 몰려 있다는 뜻.
+    #    둘을 나란히 찍어, 표의 숫자를 진입 신호로 읽지 않게 한다.
+    for b in ("극단공포", "극단탐욕"):
+        f = m["band"] == b
+        e = m[f & ~f.shift(fill_value=False)]["fwd20"].dropna()
+        if len(e):
+            print(f"    ↳ {b} 사건 {len(e)}건 진입일 기준: 평균 {e.mean() * 100:+.2f}% · "
+                  f"중앙값 {e.median() * 100:+.2f}% · 승 {int((e > 0).sum())}/{len(e)}")
+
     # ── 대시보드용: backtest_stats 테이블에 적재 (기간별 fwd/hit 컬럼) ──
     recs = []
     for b in ORDER + ["전체"]:
         d = m if b == "전체" else m[m["band"] == b]
         if len(d) == 0:
             continue
-        rec = {"market": market, "band": b, "n": int(len(d))}
+        rec = {"market": market, "band": b, "n": int(len(d)),
+               "n_episodes": None if b == "전체" else episodes(b)}
         for h in HORIZONS:
-            rec[f"fwd{h}"] = round(float(d[f"fwd{h}"].mean() * 100), 2)
-            rec[f"hit{h}"] = round(float((d[f"fwd{h}"] > 0).mean() * 100), 1)
+            f = d[f"fwd{h}"].dropna()          # 미완성 창 제외 (위 summary 주석 참고)
+            rec[f"fwd{h}"] = round(float(f.mean() * 100), 2) if len(f) else None
+            rec[f"hit{h}"] = round(float((f > 0).mean() * 100), 1) if len(f) else None
         recs.append(rec)
     sb.table("backtest_stats").upsert(recs, on_conflict="market,band").execute()
     print(f"[{market}] backtest_stats 적재 완료: {len(recs)}행\n")
