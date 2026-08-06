@@ -9,3 +9,4 @@ venv/
 
 # profile.py 로컬 실행 결과(매물대 PNG) — 대시보드가 본체라 저장소엔 불필요
 profile_*.png
+cgo_dry.csv
