@@ -30,6 +30,11 @@
 #    평단선과 이 게이지의 평단은 다른 값이다 — 의도된 차이다. 저쪽은 '오늘 이 종목의
 #    보유 단가', 이쪽은 '시장 전체가 얼마나 물렸나'를 추이로 보는 지표라 목적이 다르다.
 #
+# ⚠️ 분할 보정은 여기서도 필수다. stock_daily는 수정주가가 아니라서, 가격에 split_adjust
+#    배율을 곱하고 순매수 '수량'은 그 역수로 나눠야 평단과 종가가 같은 주수 단위에 놓인다
+#    (대금은 분할과 무관). holders.py가 같은 이유로 같은 보정을 한다 — 규칙이 갈리는 건
+#    '평균 내는 방식'뿐이고, 단위 정규화는 갈리면 안 되는 부분이다.
+#
 # ⚠️ 원자료 investor_flow가 2024-07-18부터다. 반감기만큼은 예열해야 무게가 실리므로
 #    시계열은 hl=182면 2025-01경, hl=365면 2025-07경부터 시작한다.
 #    창과 달리 감쇠는 기억이 무한해서, 자료 시작 이전의 매수가 통째로 빠진 채 계산된다.
@@ -52,6 +57,8 @@ except Exception:
     pass
 
 load_dotenv()
+import profile as vp             # noqa: E402  split_adjust 재사용 (holders.py와 같은 규칙)
+
 sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
 
 TYPES = ["기관합계", "기타법인", "개인", "외국인합계"]
@@ -141,19 +148,50 @@ def main():
 
     flow = page_by_month("investor_flow", "code,dt,inv,vol,val", lo, hi)
     flow["dt"] = pd.to_datetime(flow["dt"])
-    print(f"  수급 {len(flow):,}행 · 종목 {flow['code'].nunique():,}개")
+    codes = sorted(flow["code"].unique())
+    print(f"  수급 {len(flow):,}행 · 종목 {len(codes):,}개")
 
-    px = page_by_month("stock_daily", "code,dt,close", lo, hi)
+    px = page_by_month("stock_daily", "code,dt,close,shares", lo, hi)
     px["dt"] = pd.to_datetime(px["dt"])
-    px = px[~px["code"].isin(["kospi", "kosdaq"])]
+    px = px[px["code"].isin(set(codes))]      # 수급이 있는 종목만 — 나머지는 어차피 안 쓴다
+    for c in ("close", "shares"):
+        px[c] = pd.to_numeric(px[c], errors="coerce")
+    px = px[px["close"] > 0].sort_values(["code", "dt"])
+
+    # 분할 보정 — stock_daily는 수정주가가 아니다. 가격은 배율 f로 낮추고 순매수 '수량'은
+    # 그 역수로 늘려야 같은 단위가 된다(대금은 분할과 무관). holders.py 헤더 27~28행과 같은 규칙.
+    # 빼먹으면 den에 분할 전 주수와 분할 후 주수가 섞여 더해져 평단이 분할비만큼 통째로 어긋난다
+    # (실측: LS ELECTRIC 5:1 분할 후 기타법인 CGO -17.4% ← 실제 +22.6%).
+    fadj, events = {}, []
+    for c, g in px.groupby("code", sort=False):
+        d = g[g["shares"] > 0].set_index("dt")[["close", "shares"]]
+        if len(d) < 2:
+            continue
+        f, ev = vp.split_adjust(d)
+        if (f != 1.0).any():
+            fadj[c] = pd.Series(f, index=d.index)
+            events += [f"{c} {e}" for e in ev]
+    px["f"] = 1.0
+    for c, s in fadj.items():
+        m = px["code"] == c
+        px.loc[m, "f"] = s.reindex(px.loc[m, "dt"]).ffill().bfill().fillna(1.0).to_numpy()
+    px["close"] = px["close"] * px["f"]
     close = px.pivot_table(index="dt", columns="code", values="close")
-    print(f"  시세 {len(px):,}행 · 거래일 {len(close):,}일")
+    print(f"  시세 {len(px):,}행 · 거래일 {len(close):,}일 · 분할 보정 {len(fadj)}종목")
+    for e in events:
+        print(f"    {e}")
 
     # (code, inv)별 날짜순 vol/val 배열 — cost_series가 한 번에 훑는다
     flow = flow.sort_values("dt")
+    flow["vol"] = pd.to_numeric(flow["vol"], errors="coerce").astype(float)
+    flow["val"] = pd.to_numeric(flow["val"], errors="coerce").astype(float)
+    for c, s in fadj.items():                      # 수량만 같은 단위로 (대금은 그대로)
+        m = flow["code"] == c
+        if m.any():
+            f = s.reindex(flow.loc[m, "dt"]).ffill().bfill().fillna(1.0).to_numpy()
+            flow.loc[m, "vol"] = flow.loc[m, "vol"].to_numpy() / f
     grp = {k: (g["dt"].to_numpy(), g["vol"].to_numpy(dtype=float), g["val"].to_numpy(dtype=float))
            for k, g in flow.groupby(["code", "inv"])}
-    codes = sorted(flow["code"].unique())
 
     recs = []
     for hl in HALFLIVES:
