@@ -7,25 +7,35 @@
 #   · 극단까지 가면 팔 사람이 소진된다(캐피추레이션 → 역발상 신호).
 #
 # holder_profile과의 관계: 저쪽은 '오늘 스냅샷 + 가격대별 분포'(개별종목 매물대 화면용),
-# 이쪽은 '시장 전체 요약의 시계열'(게이지·추이용). 평단 계산 로직은 holders.avg_cost와 동일하다.
+# 이쪽은 '시장 전체 요약의 시계열'(게이지·추이용).
 #
-# ⚠️ 원자료 investor_flow가 2024-07-18부터라, win=365면 시계열은 2025-07경부터 시작한다.
-#    창을 채우기 전 구간은 표본이 얕아 아예 내보내지 않는다(백분위가 왜곡되므로).
+# ── 평단 계산: 창을 자르지 않고 감쇠 가중한다 ──────────────────────────────
+# 📌 먼저 오해 하나를 접어둔다. 이 지표가 2026-03-04에 하루 -10%p 튀는 걸 보고
+#    '365일 전 대량 매수가 창 밖으로 빠져서'라고 의심한 적이 있는데, 아니었다.
+#    그날은 코스피가 5791.91 → 5093.54(-12.1%), 코스닥 -14%로 빠진 실제 폭락일이다.
+#    CGO ≈ 가격/평단이라 지수가 12% 빠지면 CGO도 12%p 빠지는 게 정상 동작이다.
+#    (판별 근거: 창이 원인이면 창 길이가 다른 hl=182에는 안 나와야 하는데 똑같이 났고,
+#     가격을 걷어내고 평단만 재면 그날 평단 일간 변화율 중앙값이 0.00%였다.)
+#    그러니 '하루에 크게 움직인다'는 것만으로 계산을 의심하지 말 것 — 먼저 지수를 보라.
 #
-# 🚧 미완성 — 아직 크론에 넣지 말 것. 적재 전에 아래를 먼저 해결해야 한다.
+# 정의를 감쇠로 바꾼 건 그 오해와 별개로 남는 이점 때문이다. 매수의 무게를 하루마다
+# 조금씩 줄인다 — 반감기 hl일이면 hl일 전 매수는 절반의 무게로만 남는다.
+#   · 경계가 없다: 언젠가 진짜 경계 효과가 생길 여지 자체를 없앤다.
+#   · 원전에 가깝다: G&H(2005)의 참조가격도 과거 매수를 감쇠 가중한 것이다.
+#   · 빠르다: 매 시점 창을 처음부터 재생하지 않고 종목당 한 번만 훑는다.
+# 실측 차이는 미미하다(평단 일간 변화율 중앙값 0.025% → 0.020%). 안정성을 위해 바꾼 게
+# 아니라 정의를 단순하게 만들려고 바꾼 것이다.
 #
-# [해결됨] 표본 구성 흔들림: 주체의 창내 포지션이 0이 되면 그 종목이 빠져 매일 20~30개가
-#   들락거렸고, 중앙값이 가격이 아니라 구성 변화로 움직였다(5거래일에 18%p 점프).
-#   → 고정 유니버스(관측률 70%↑) + ffill(limit=20)로 n_stocks 166~193 → 171~183 안정화.
+# ⚠️ 그래서 holders.avg_cost(창 방식)와 계산 규칙이 갈린다. 개별종목 매물대 화면의
+#    평단선과 이 게이지의 평단은 다른 값이다 — 의도된 차이다. 저쪽은 '오늘 이 종목의
+#    보유 단가', 이쪽은 '시장 전체가 얼마나 물렸나'를 추이로 보는 지표라 목적이 다르다.
 #
-# [미해결] 창 경계 불연속: 그래도 하루 ±10%p가 남는다(2026-03-04 -10.2%p → 03-05 +7.4%p).
-#   원인은 '365일 전 대량 매수일이 창 밖으로 빠지는 순간' + avg_cost_run의 pos<=0 리셋 규칙이
-#   겹쳐, 여러 종목의 평단이 동시에 불연속 점프하는 것. 정확히 365일 전(2025-03-04)에
-#   개인 수급 이벤트가 있으면 그 그림자가 1년 뒤 하루에 몰려 나타난다.
-#   후보 해법 3가지 — 어느 쪽을 택할지는 지표 정의의 문제라 상의 필요:
-#     ① 고정 앵커의 확장창(창 경계 자체를 없앰. 대신 '최근 1년'이라는 뜻은 사라짐)
-#     ② pos<=0에서 평단을 리셋하지 않고 유지(불연속은 줄지만 '다 팔았는데 평단이 남음')
-#     ③ 원인은 두고 EWM 평활(증상만 가림 — 다른 지수들과 달리 여기선 원인이 진짜 왜곡이라 비추천)
+# ⚠️ 원자료 investor_flow가 2024-07-18부터다. 반감기만큼은 예열해야 무게가 실리므로
+#    시계열은 hl=182면 2025-01경, hl=365면 2025-07경부터 시작한다.
+#    창과 달리 감쇠는 기억이 무한해서, 자료 시작 이전의 매수가 통째로 빠진 채 계산된다.
+#    실측하면 이력 6개월 차이가 cgo_med를 평균 0.54%p·최대 1.84%p 움직인다 — 방향이 일정치
+#    않아(초반 +0.85%p / 후반 -0.19%p) 추세를 만들진 않지만, 백분위는 이 정도 폭의 잡음을
+#    깔고 있다고 보고 읽을 것. 자료가 길어질수록 줄어든다.
 #
 # 사용: python cgo.py           → 계산 + 적재 (크론용)
 #       python cgo.py --dry     → 적재 없이 콘솔 요약만 + cgo_dry.csv
@@ -45,8 +55,9 @@ load_dotenv()
 sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
 
 TYPES = ["기관합계", "기타법인", "개인", "외국인합계"]
-WINDOWS = [182, 365]
-DEEP = -20.0          # '크게 물림' 기준(%)
+HALFLIVES = [182, 365]   # 매수 무게의 반감기(달력일)
+DEEP = -20.0             # '크게 물림' 기준(%)
+DAY = np.timedelta64(1, "D")
 
 
 def page_by_month(table, sel, lo, hi, extra=None):
@@ -68,23 +79,54 @@ def page_by_month(table, sel, lo, hi, extra=None):
     return pd.DataFrame(out)
 
 
-def avg_cost_run(vol, val):
-    """holders.avg_cost와 같은 규칙의 이동평균 매입단가.
-    순매수일엔 평단 갱신, 순매도일엔 수량만 감소(평균원가법), 다 팔면 리셋.
-    수량 +인데 대금 −인 날은 단가 불명이라 평단을 건드리지 않는다."""
-    pos = cost = 0.0
-    for nv, nval in zip(vol, val):
-        if nv > 0 and nval > 0:
-            px = nval / nv
-            cost = (pos * cost + nv * px) / (pos + nv)
-            pos += nv
-        elif nv > 0:
-            pos += nv
-        else:
-            pos += nv
-            if pos <= 0:
-                pos = cost = 0.0
-    return pos, cost
+def cost_series(dt_arr, vol, val, days, hl):
+    """감쇠 가중 이동평균 매입단가를 요청한 거래일마다 돌려준다(없으면 NaN).
+
+    num = 감쇠 가중 매수대금, den = 감쇠 가중 매수수량 → 평단 = num/den.
+    새 매수를 더하기 전에 기존 num·den을 경과일수만큼 감쇠시키므로, 오래된 매수일수록
+    새 매수에 밀려난다. 감쇠는 num·den에 똑같이 걸려 비율(평단)은 건드리지 않는다 —
+    바뀌는 건 '앞으로 들어올 매수에 얼마나 희석되는가' 뿐이다.
+
+    순매도는 평균원가법대로 단가를 그대로 두고 수량만 덜어낸다. 단 실제 포지션 대비
+    '비율'로 덜어낸다(절대 주수로 빼면 감쇠된 den이 실제보다 빨리 말라버린다).
+    다 팔면(pos<=0) 리셋 — 이후 첫 매수가 새 평단이 된다.
+    수량 +인데 대금 −인 날은 단가 불명이라 현재 평단으로 채워 넣어 평단을 유지한다.
+    """
+    d1 = 0.5 ** (1.0 / hl)            # 하루치 감쇠 계수
+    out = np.full(len(days), np.nan)
+    pos = num = den = 0.0             # pos는 감쇠 없는 실제 순포지션(매도 비율·표본 판정용)
+    prev = None
+    i, n = 0, len(dt_arr)
+    for k, d in enumerate(days):
+        d64 = np.datetime64(d)
+        while i < n and dt_arr[i] <= d64:
+            t, nv, nw = dt_arr[i], vol[i], val[i]
+            i += 1
+            if nv == 0:
+                continue
+            if prev is not None and den > 0:
+                f = d1 ** ((t - prev) / DAY)
+                num *= f
+                den *= f
+            prev = t
+            if nv > 0:
+                if nw > 0:
+                    num += nw
+                else:                              # 단가 불명 — 현재 평단으로 채워 유지
+                    num += nv * (num / den) if den > 0 else 0.0
+                den += nv
+                pos += nv
+            elif pos > 0:
+                sold = min(-nv, pos)
+                r = 1.0 - sold / pos
+                num *= r
+                den *= r
+                pos -= sold
+                if pos <= 0:
+                    pos = num = den = 0.0
+        if den > 0 and num > 0:
+            out[k] = num / den
+    return out
 
 
 def main():
@@ -107,59 +149,49 @@ def main():
     close = px.pivot_table(index="dt", columns="code", values="close")
     print(f"  시세 {len(px):,}행 · 거래일 {len(close):,}일")
 
-    # (code, inv)별로 날짜 정렬된 vol/val 배열을 미리 만들어 둔다 — 매 시점 재계산의 재료
+    # (code, inv)별 날짜순 vol/val 배열 — cost_series가 한 번에 훑는다
     flow = flow.sort_values("dt")
     grp = {k: (g["dt"].to_numpy(), g["vol"].to_numpy(dtype=float), g["val"].to_numpy(dtype=float))
            for k, g in flow.groupby(["code", "inv"])}
     codes = sorted(flow["code"].unique())
 
-    dates = close.index
     recs = []
-    for win in WINDOWS:
-        # 창을 다 채운 날부터만 — 덜 찬 창은 평단이 얕아 값이 튄다
-        first = pd.Timestamp(lo) + pd.Timedelta(days=win)
-        days = [d for d in dates if d >= first]
-        if not days:
-            print(f"  [win={win}] 창을 채운 날이 없음 — 건너뜀")
+    for hl in HALFLIVES:
+        # 반감기만큼은 예열해야 무게가 실린다 — 그 전 구간은 평단이 얕아 값이 튄다
+        first = pd.Timestamp(lo) + pd.Timedelta(days=hl)
+        days = pd.DatetimeIndex([d for d in close.index if d >= first])
+        if len(days) == 0:
+            print(f"  [반감기 {hl}일] 예열 구간을 못 넘김 — 건너뜀")
             continue
-        print(f"  [win={win}] {days[0].date()} ~ {days[-1].date()} ({len(days)}일) 계산 중...", flush=True)
-        mat = {t: {} for t in TYPES}          # {주체: {날짜: {종목: CGO%}}}
-        for d in days:
-            start = d - pd.Timedelta(days=win)
-            for t in TYPES:
-                mat[t][d] = {}
-            for c in codes:
-                p = close.at[d, c] if c in close.columns else np.nan
-                if not np.isfinite(p) or p <= 0:
-                    continue
-                for t in TYPES:
-                    g = grp.get((c, t))
-                    if g is None:
-                        continue
-                    dt_arr, v, w = g
-                    m = (dt_arr > np.datetime64(start)) & (dt_arr <= np.datetime64(d))
-                    if not m.any():
-                        continue
-                    pos, cost = avg_cost_run(v[m], w[m])
-                    if pos > 0 and cost > 0:
-                        mat[t][d][c] = p / cost * 100 - 100
+        print(f"  [반감기 {hl}일] {days[0].date()} ~ {days[-1].date()} ({len(days)}일) 계산 중...", flush=True)
 
-        # ⚠️ 여기서 그날그날 있는 종목만 모아 중앙값을 내면 안 된다.
-        #    주체의 창내 포지션이 0이 되면 그 종목이 표본에서 빠지는데, 매일 20~30개가
-        #    들락거려 중앙값이 '가격'이 아니라 '표본 구성'으로 움직인다(실측: 5거래일에 18%p 점프).
-        #    → ① 고정 유니버스(관측률 70%↑)로 묶고 ② 일시 이탈은 직전값으로 이어 붙인다.
         for t in TYPES:
-            wide = pd.DataFrame(mat[t]).T.sort_index()      # 행=날짜, 열=종목
-            if wide.empty:
+            cols = {}
+            for c in codes:
+                g = grp.get((c, t))
+                if g is None:
+                    continue
+                s = cost_series(g[0], g[1], g[2], days, hl)
+                if np.isfinite(s).any():
+                    cols[c] = s
+            if not cols:
                 continue
-            keep = wide.columns[wide.notna().mean() >= 0.70]
-            wide = wide[keep].ffill(limit=20)
-            for d, row in wide.iterrows():
+            cost = pd.DataFrame(cols, index=days)
+            p = close.reindex(index=days, columns=cost.columns)
+            cgo = (p / cost * 100 - 100).where(p > 0).replace([np.inf, -np.inf], np.nan)
+
+            # ⚠️ 그날그날 있는 종목만 모아 중앙값을 내면 안 된다. 주체의 포지션이 0이 되면
+            #    그 종목이 표본에서 빠지는데, 매일 20~30개가 들락거려 중앙값이 '가격'이 아니라
+            #    '표본 구성'으로 움직인다(실측: 5거래일에 18%p 점프).
+            #    → ① 고정 유니버스(관측률 70%↑)로 묶고 ② 일시 이탈은 직전값으로 이어 붙인다.
+            keep = cgo.columns[cgo.notna().mean() >= 0.70]
+            cgo = cgo[keep].ffill(limit=20)
+            for d, row in cgo.iterrows():
                 a = row.to_numpy(dtype=float)
                 a = a[np.isfinite(a)]
                 if len(a) < 30:          # 종목 30개 미만이면 시장 요약으로 못 쓴다
                     continue
-                recs.append({"dt": d.strftime("%Y-%m-%d"), "win_days": win, "inv": t,
+                recs.append({"dt": d.strftime("%Y-%m-%d"), "hl_days": hl, "inv": t,
                              "n_stocks": int(len(a)),
                              "cgo_med": round(float(np.median(a)), 2),
                              "cgo_avg": round(float(a.mean()), 2),
@@ -167,18 +199,31 @@ def main():
                              "deep_pct": round(float((a < DEEP).mean() * 100), 1)})
 
     if not recs:
-        print("계산 결과 없음 — 원자료 기간이 창보다 짧습니다.")
+        print("계산 결과 없음 — 원자료 기간이 예열 구간보다 짧습니다.")
         return
     out = pd.DataFrame(recs)
     print(f"\n계산 완료: {len(out):,}행")
     last = out[out["dt"] == out["dt"].max()].sort_values("cgo_med")
     print(f"\n최신 {out['dt'].max()} — 주체별 미실현손익")
-    print(last[["win_days", "inv", "n_stocks", "cgo_med", "under_pct", "deep_pct"]].to_string(index=False))
+    print(last[["hl_days", "inv", "n_stocks", "cgo_med", "under_pct", "deep_pct"]].to_string(index=False))
 
-    ind = out[(out["inv"] == "개인") & (out["win_days"] == 365)].sort_values("dt")
+    # 일간 변동 점검. 큰 값이 곧 버그는 아니다 — 이 폭은 대부분 그날 지수 등락이 만든다.
+    # (평단은 하루 0.02% 수준으로만 움직인다. 이상하면 평단이 아니라 지수부터 확인할 것.)
+    print("\n일간 변동 — 반감기별·주체별 (대부분 지수 등락분이다)")
+    for hl in sorted(out["hl_days"].unique()):
+        for t in TYPES:
+            s = out[(out["hl_days"] == hl) & (out["inv"] == t)].sort_values("dt")
+            if len(s) < 3:
+                continue
+            j = s["cgo_med"].diff().abs()
+            k = j.idxmax()
+            print(f"  hl={hl:3d} {t:6s} 최대 {j.max():5.1f}%p ({s.loc[k, 'dt']}) · "
+                  f"평균 {j.mean():4.2f}%p · 1%p 초과 {int((j > 1).sum())}일/{len(s)}일")
+
+    ind = out[(out["inv"] == "개인") & (out["hl_days"] == 365)].sort_values("dt")
     if len(ind) > 5:
         cur = ind["cgo_med"].iloc[-1]
-        print(f"\n개인(365일) 추이: 최저 {ind['cgo_med'].min():+.1f}% "
+        print(f"\n개인(반감기 365일) 추이: 최저 {ind['cgo_med'].min():+.1f}% "
               f"({ind.loc[ind['cgo_med'].idxmin(), 'dt']}) / 최고 {ind['cgo_med'].max():+.1f}% "
               f"({ind.loc[ind['cgo_med'].idxmax(), 'dt']}) / 현재 {cur:+.1f}% "
               f"· 백분위 {(cur > ind['cgo_med']).mean() * 100:.0f}%ile")
@@ -190,7 +235,7 @@ def main():
         return
     rows = out.to_dict("records")
     for i in range(0, len(rows), 1000):
-        sb.table("cgo_daily").upsert(rows[i:i + 1000], on_conflict="dt,win_days,inv").execute()
+        sb.table("cgo_daily").upsert(rows[i:i + 1000], on_conflict="dt,hl_days,inv").execute()
     print(f"cgo_daily 적재 완료: {len(rows):,}행")
 
 
