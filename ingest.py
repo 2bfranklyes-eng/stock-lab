@@ -4,6 +4,7 @@ import sys
 import time
 import json
 import urllib.request
+from datetime import date, timedelta
 from dotenv import load_dotenv
 import pandas as pd
 import yfinance as yf
@@ -240,6 +241,79 @@ def run_ecos():
     print(f"[KR] ECOS 완료: 총 {total} rows" + (f"  (건너뜀: {', '.join(failed)})" if failed else ""))
 
 
+# ── KRX 투자자별 순매수(코스피 전체) 일별 — 수급 원자료 ──
+# 왜 필요한가 — holders.py가 채우는 investor_flow는 종목별 실측이라 정밀하지만 2024-07부터고
+# 200종목뿐이다. 수급 가설(외국인이 언제 사고 파는가, 환율 레짐이 선행하는가, 개인 항복이
+# 바닥인가)을 검증하려면 사건 수가 필요한데, 2년 표본으로는 국면이 4~16개밖에 안 잡혀
+# 어떤 가설도 우연과 구별되지 않았다. 이 시계열은 2015년부터라 표본이 5배 이상 늘어난다.
+#
+# 종목별이 아니라 시장 전체 합계라 investor_flow를 대체하지 않는다 — 역할이 다르다.
+#   · investor_flow  : 종목별·정밀·짧음 → 매물대(holder_profile), 종목 단위 분석
+#   · kr_foreign 계열: 시장 전체·긴 이력 → 레짐/타이밍 가설 검증
+#
+# pykrx는 임포트 시점에 KRX 로그인을 시도하므로 지연 임포트한다(holders.py와 같은 이유).
+# KRX_ID/KRX_PW가 없으면 조용히 건너뛴다 — refresh_kr.yml(오후 크론)엔 그 시크릿이 없고,
+# 없다고 해서 나머지 지표 수집까지 멈추면 안 된다.
+KRX_ID = os.environ.get("KRX_ID", "").strip()
+KRX_PW = os.environ.get("KRX_PW", "").strip()
+KR_INVESTOR_START = "20150101"    # yfinance·ECOS 수집 시작과 정렬
+KR_INVESTOR = {                   # code → (pykrx 컬럼명, 메타 name)
+    "kr_foreign": ("외국인합계", "코스피 외국인 순매수(억원)"),
+    "kr_inst":    ("기관합계",   "코스피 기관 순매수(억원)"),
+    "kr_indiv":   ("개인",       "코스피 개인 순매수(억원)"),
+}
+
+
+def run_kr_investor():
+    """코스피 투자자별 일별 순매수 대금을 indicator_raw(market=KR)에 적재. 단위: 억원.
+
+    증분 수집 — 이미 있는 마지막 날짜 다음부터 오늘까지만. 처음이면 2015-01-01부터 백필.
+    (전 구간이 몇 콜이면 끝나지만, 매일 11년치를 다시 upsert할 이유는 없다.)"""
+    if not (KRX_ID and KRX_PW):
+        print("[KR] KRX_ID/KRX_PW 없음 — 투자자별 순매수 수집 건너뜀")
+        return
+    sb.table("indicator_meta").upsert(          # FK 충족: 신규 코드 메타 먼저 등록
+        [{"code": code, "name": name, "market": "KR", "category": "수급",
+          "role": "flow", "source": "pykrx:get_market_trading_value_by_date/KOSPI"}
+         for code, (_col, name) in KR_INVESTOR.items()], on_conflict="code").execute()
+
+    r = sb.table("indicator_raw").select("dt").eq("market", "KR").eq("code", "kr_foreign") \
+          .order("dt", desc=True).limit(1).execute().data
+    start = ((date.fromisoformat(r[0]["dt"]) + timedelta(days=1)).strftime("%Y%m%d")
+             if r else KR_INVESTOR_START)
+    end = date.today().strftime("%Y%m%d")
+    if start > end:
+        print(f"[KR] 투자자별 순매수: 최신 상태({r[0]['dt']}) — 건너뜀")
+        return
+
+    try:
+        from pykrx import stock                 # 임포트 = KRX 로그인 시도라 여기서
+        df = stock.get_market_trading_value_by_date(start, end, "KOSPI")
+    except Exception as e:
+        print(f"[KR] 투자자별 순매수 실패 — {e}")
+        sb.table("ingest_log").insert(
+            {"source": "krx_investor", "market": "KR", "rows": 0, "status": "error"}).execute()
+        return
+    if df is None or df.empty:
+        print(f"[KR] 투자자별 순매수: {start}~{end} 응답 없음(휴장 구간일 수 있음)")
+        return
+
+    total = 0
+    for code, (col, _name) in KR_INVESTOR.items():
+        if col not in df.columns:
+            print(f"  [KR] {code}: pykrx 응답에 '{col}' 열 없음 — 건너뜀")
+            continue
+        rows = [{"market": "KR", "dt": d.strftime("%Y-%m-%d"), "code": code,
+                 "value": float(v) / 1e8}          # 원 → 억원
+                for d, v in df[col].items() if pd.notna(v)]
+        upsert(rows)
+        total += len(rows)
+        print(f"  [KR] {code}: {len(rows)} rows")
+    sb.table("ingest_log").insert(
+        {"source": "krx_investor", "market": "KR", "rows": total, "status": "ok"}).execute()
+    print(f"[KR] 투자자별 순매수 완료: {start}~{end} 총 {total} rows")
+
+
 # ── FRED(세인트루이스 연준) 일별 — 실질금리 (yfinance엔 없음) ──
 # 금 밸류에이션의 제1 렌즈: 금은 이자가 없어 보유의 기회비용이 물가연동국채(TIPS) 실질수익률이다.
 # 채권 카드에도 '실질수익률 수준'으로 쓴다. fuel.py의 fred()와 같은 API지만 그쪽은 주간 유동성용
@@ -293,3 +367,4 @@ if __name__ == "__main__":
         run_fred()
     if "KR" in markets:                            # 한국 국내 금리(ECOS)는 yfinance 뒤에 별도 수집
         run_ecos()
+        run_kr_investor()                          # 코스피 투자자별 순매수(KRX 로그인 필요, 없으면 스킵)
