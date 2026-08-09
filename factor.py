@@ -12,25 +12,30 @@
 #    물리면 연 5~7%가 깎여, 우리가 봐 온 '초과 +3%p' 같은 건 그냥 사라진다.
 #    그래서 모든 결과를 비용 전/후로 나란히 찍는다. 안 그러면 자기기만이다.
 #
-# 🚨 이 백테스트의 가장 큰 한계 — 유니버스가 point-in-time이 아니다.
-#   vp_stocks는 매일 '현재 시총' 기준으로 재구성되고 stock_daily는 그 유니버스만 보관한다
-#   (상위 200종목 5년 · 나머지 2년). 그래서 과거 어느 시점을 봐도 '오늘 살아남은 종목'만
-#   들어 있고, 그 사이 상장폐지·시총 급감으로 빠진 종목은 흔적도 없다.
-#   실측한 편향의 크기:
-#     · 5년 내내 존재한 175종목의 5년 수익률 중앙값 +87% (평균 +233%)
-#     · 그중 5년 전 시총 하위였던 88종목은 +137%, 당시 상위였던 종목은 +19%
-#   → '소형주 팩터 +74%/년'은 팩터가 아니라 이 편향이다. 5년 전 작았는데 지금까지 상위
-#     200에 남으려면 그 사이 크게 올랐어야 하니까. 유니버스가 넓어지는 2024-08 이후
-#     구간에서는 실제로 -5%로 사라진다.
-#   그래서 기본 판단은 BROAD_FROM 이후(유니버스가 거의 전체인 구간)로만 한다. 그 구간도
-#   '오늘 기준 선택'인 건 같지만, 표본이 173종목에서 1,600종목대로 늘어 편향이 훨씬 작다.
-#   제대로 고치려면 매 시점의 실제 상장종목 전체(상장폐지 포함)를 따로 쌓아야 한다.
+# 데이터는 pit_monthly(point-in-time) — 매 시점 실제 상장돼 있던 전 종목의 월말 스냅샷이고
+# 상장폐지 종목도 그 시점 기록으로 남아 있다. 2015-01 ~ 현재, 월 2,000~2,800종목.
+#
+# 초판은 stock_daily로 돌렸는데 생존 편향이 결과를 통째로 뒤집고 있었다. vp_stocks가 매일
+# '현재 시총'으로 재구성되고 stock_daily는 그 유니버스만 보관해서, 과거 어느 시점을 봐도
+# 오늘 살아남은 종목뿐이었다. 실측한 편향:
+#   · 5년 내내 존재한 175종목의 5년 수익률 중앙값 +87%(평균 +233%)
+#   · 그중 5년 전 시총 하위였던 88종목 +137% vs 당시 상위였던 종목 +19%
+#   · 그래서 '소형주 팩터'가 +74%/년으로 나왔다. PIT로 바꾸니 -3.2%.
+#   · '모멘텀 +26%/년'도 마찬가지로 -10.9%가 됐다.
+# 편향의 크기를 남겨두려고 '11년 생존 종목만' 대조군을 아직 출력한다.
+#
+# 결론(2015-01~2026-07, 139개월): 다섯 팩터 중 실행 가능한 게 없다.
+#   · 두 기간 부호가 맞는 건 모멘텀·단기반전뿐인데 둘 다 마이너스다.
+#   · 저변동성은 +15%지만 전반 -2.2% / 후반 +35.9%로 불안정하고, 롱온리 초과가 -1.6%라
+#     수익이 전부 숏 다리에서 난다 — 한국에서 개인은 공매도를 못 하니 실행 불가.
+#   · 소형주·비유동성도 부호가 뒤집힌다.
+#   사용자가 인용한 문헌의 결론("비용 넣으면 초과수익이 사라진다")과 같은 자리다.
 #
 # 못 하는 것: 밸류(PBR/PER) 팩터. stock_meta는 500종목의 '현재 스냅샷' 하나뿐이라
 #   과거 시점의 PBR을 모른다. 재무 시계열을 쌓기 전엔 검증 자체가 불가능하다.
 #
 # 사용: python factor.py            (캐시 사용, 없으면 받아서 저장)
-#       python factor.py --refresh  (Supabase에서 다시 받기, 약 5분)
+#       python factor.py --refresh  (Supabase에서 pit_monthly 다시 받기)
 import os
 import sys
 import pickle
@@ -47,7 +52,7 @@ except Exception:
 
 load_dotenv()
 sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
-CACHE = "factor_cache.pkl"          # .gitignore 대상 — 94만 행이라 매번 받으면 5분씩 든다
+CACHE = "factor_cache.pkl"          # .gitignore 대상 — 33만 행이라 매번 받으면 느리다
 
 # ── 거래 가능성 필터 ──
 # 소형·저유동 종목을 빼는 이유: 백테스트에서 초과수익 대부분이 '실제로는 못 사는 종목'에서
@@ -58,19 +63,22 @@ COST_RT = 0.003                     # 왕복 거래비용 0.3% (거래세 0.18% 
 NQ = 10                             # 10분위
 
 
-def fetch_panel():
+def fetch_pit():
+    """pit_monthly — 매 시점 실제 상장돼 있던 전 종목의 월말 스냅샷(상장폐지 종목 포함).
+    stock_daily를 쓰던 초판은 생존 편향으로 소형주 팩터가 +74%/년까지 부풀었다."""
     rows, off, t0 = [], 0, time.time()
     while True:
-        d = (sb.table("stock_daily").select("code,dt,close,tval,mktcap,shares")
-             .order("code").order("dt").range(off, off + 999).execute().data)
+        d = (sb.table("pit_monthly")
+             .select("code,ym,name,market,close,mktcap,shares,tval_avg,vol,n_days")
+             .order("ym").order("code").range(off, off + 999).execute().data)
         rows += d
         off += 1000
-        if len(rows) % 100000 < 1000:
+        if len(rows) % 50000 < 1000:
             print(f"  {len(rows):,}행 ({time.time()-t0:.0f}초)", flush=True)
         if len(d) < 1000:
             break
     df = pd.DataFrame(rows)
-    df["dt"] = pd.to_datetime(df["dt"])
+    df["ym"] = pd.PeriodIndex(df["ym"], freq="M")
     return df
 
 
@@ -78,25 +86,30 @@ def load_panel(refresh=False):
     if not refresh and os.path.exists(CACHE):
         with open(CACHE, "rb") as f:
             df = pickle.load(f)
-        print(f"캐시 사용: {len(df):,}행  {df.dt.min().date()} ~ {df.dt.max().date()}")
+        print(f"캐시 사용: {len(df):,}행  {df.ym.min()} ~ {df.ym.max()}")
         return df
-    print("Supabase에서 stock_daily 적재 중… (약 5분)")
-    df = fetch_panel()
+    print("Supabase에서 pit_monthly 적재 중…")
+    df = fetch_pit()
     with open(CACHE, "wb") as f:
         pickle.dump(df, f)
     print(f"적재 완료: {len(df):,}행 → {CACHE} 저장")
     return df
 
 
-def split_adjust(df):
-    """액면분할·병합·인적분할 보정. stock_daily는 수정주가가 아니라, 그대로 수익률을 내면
-    분할일에 -50% 같은 값이 찍혀 모멘텀·반전 팩터가 통째로 오염된다.
-    판정 규칙은 profile.py의 split_adjust와 동일하게 맞춘다 — 상장주식수가 급변한 날
-    주가가 그 역수만큼 움직였으면(=시총 연속) 분할류로 보고 이전 구간 가격에 배율을 적용.
-    유상증자는 시총이 함께 늘어 주가가 안 꺾이므로 걸리지 않는다."""
+def build_monthly(df):
+    """pit_monthly → 팩터용 패널. 이미 월별이라 집계는 없고, 분할 보정과 다음 달 수익률만.
+
+    분할 보정이 여전히 필요하다 — pit_monthly의 close는 수정주가가 아니라서, 액면분할이
+    낀 달의 수익률이 -50%로 찍힌다. 판정은 profile.py와 같은 규칙(주식수가 급변했는데
+    주가가 그 역수만큼 움직였으면 분할)을 월 단위로 적용한다. 유상증자는 시총이 함께
+    늘어 주가가 안 꺾이므로 걸리지 않는다."""
+    m = df.rename(columns={"tval_avg": "tval", "n_days": "n"}).copy()
+    m = m.dropna(subset=["close"])
+    m = m[m["n"] >= 10]                          # 거래일이 적은 달 제외(신규상장·거래정지)
+    m = m.sort_values(["code", "ym"])
     out = []
-    for code, g in df.groupby("code", sort=False):
-        g = g.sort_values("dt")
+    for _code, g in m.groupby("code", sort=False):
+        g = g.sort_values("ym")
         sh, px = g["shares"].to_numpy(), g["close"].to_numpy()
         f = np.ones(len(g))
         for i in range(1, len(g)):
@@ -106,28 +119,13 @@ def split_adjust(df):
             if (r > 1.5 or r < 0.67) and abs(px[i] / px[i - 1] * r - 1) < 0.25:
                 f[:i] /= r
         g = g.copy()
-        g["close"] = g["close"] * f
+        g["close"] = px * f
         out.append(g)
-    return pd.concat(out, ignore_index=True)
-
-
-def build_monthly(df):
-    """일별 → 월별 패널. 팩터 재료를 월말 시점 기준으로 만든다(룩어헤드 방지)."""
-    df = df.dropna(subset=["close"]).sort_values(["code", "dt"])
-    df = split_adjust(df)
-    df["ret"] = df.groupby("code")["close"].pct_change()
-    # 분할 보정 후에도 남는 극단값(거래정지 후 재개, 데이터 오류)은 잘라낸다 —
-    # 한 종목의 +500% 한 달이 분위 평균을 통째로 흔든다.
-    df.loc[df["ret"].abs() > 0.5, "ret"] = np.nan
-    df["ym"] = df["dt"].dt.to_period("M")
-    g = df.groupby(["code", "ym"])
-    m = g.agg(close=("close", "last"), mktcap=("mktcap", "last"),
-              tval=("tval", "mean"), vol=("ret", "std"), n=("close", "size")).reset_index()
-    m = m[m["n"] >= 10]                          # 거래일이 너무 적은 달은 제외(상장·거래정지)
-    m = m.sort_values(["code", "ym"])
+    m = pd.concat(out, ignore_index=True).sort_values(["code", "ym"])
     # 다음 달 수익률 — 팩터는 t월말, 성과는 t→t+1. 이 한 칸이 룩어헤드의 전부다.
     m["fwd"] = m.groupby("code")["close"].shift(-1) / m["close"] - 1
-    # 연속된 달인지 확인(중간에 빠진 달이 있으면 fwd가 두 달치가 된다)
+    # 연속된 달인지 확인. 상장폐지·거래정지로 끊긴 종목의 fwd는 버린다 —
+    # 여기서 안 끊으면 '없어진 달'을 건너뛴 수익률이 되어 편향이 다시 들어온다.
     nxt = m.groupby("code")["ym"].shift(-1)
     m.loc[nxt != m["ym"] + 1, "fwd"] = np.nan
     return m
@@ -148,10 +146,8 @@ def make_factors(m):
 
 
 def fixed_universe(m):
-    """전 기간 내내 존재한 종목만. 왜 필요한가 — stock_daily는 상위 200종목만 5년,
-    나머지는 2년치를 보관한다(krx.py의 DEEP_N/SHALLOW_DAYS 티어). 그래서 그냥 돌리면
-    2024년 이전은 대형주 177종목, 이후는 900종목대가 되어 '전반 vs 후반'이 사실은
-    '대형주 vs 전체'가 된다. 기간분할로 안정성을 보려면 유니버스가 고정돼야 한다."""
+    """11년 내내 상장돼 있던 종목만 = 생존자. PIT로 바꾼 지금은 대조군 용도다 —
+    전체(폐지 종목 포함)와 나란히 찍어 생존 편향이 결과를 얼마나 밀어 올리는지 보여준다."""
     span = m.groupby("code")["ym"].agg(["min", "max"])
     lo, hi = m["ym"].min(), m["ym"].max()
     return set(span[(span["min"] <= lo + 1) & (span["max"] >= hi - 1)].index)
@@ -221,27 +217,15 @@ if __name__ == "__main__":
 
     FACTORS = [("MOM", "모멘텀 12-1"), ("REV", "단기반전 1M"), ("LOWVOL", "저변동성"),
                ("SMALL", "소형주"), ("ILLIQ", "비유동성")]
-    # 유니버스가 '거의 전체'가 되는 첫 달 — 그 전은 오늘의 상위 200만 있어 편향이 지배한다
     cnt = m.groupby("ym")["code"].nunique()
-    broad = cnt[cnt > cnt.max() * 0.7]
-    BROAD_FROM = broad.index.min() if len(broad) else None
     print(f"월별 종목수: {cnt.iloc[0]}종목({cnt.index[0]}) → {cnt.iloc[-1]}종목({cnt.index[-1]})")
-    print(f"⚠️ 유니버스가 넓어지는 시점: {BROAD_FROM} — 그 전 구간은 생존 편향이 지배한다")
-
     fixed = fixed_universe(m)
-    mb = m[m["ym"] >= BROAD_FROM] if BROAD_FROM is not None else m
-    print(f"\n{'#'*82}\n### ★ 신뢰 구간: {BROAD_FROM} 이후 (유니버스 거의 전체) ★\n{'#'*82}")
-    print(f"  {'팩터':14}{'롱숏(비용후)':>14}{'롱온리 초과':>13}{'월승률':>9}{'개월':>7}")
-    for f, label in FACTORS:
-        r = decile_test(mb, f, label)
-        if r is None:
-            continue
-        s, lo = summ(r, "ls_net"), summ(r, "lo_net")
-        print(f"  {label:14}{s['ann']:>+13.2f}%{lo['ann']:>+12.2f}%{s['win']:>8.0f}%{s['n']:>7}")
-    print("  ↑ 이 표만 참고하세요. 아래 두 표는 편향이 얼마나 큰지 보여주는 대조군입니다.")
+    print(f"11년 생존 종목: {len(fixed)}개 — 아래 대조군에 쓴다")
 
-    for uni, uname in ((None, "커지는 유니버스 — 참고용"),
-                       (fixed, "고정 유니버스 — 생존 편향 시연용")):
+    # 두 표를 나란히 찍는 이유: 위가 진짜 결과, 아래는 '생존자만 봤을 때' 얼마나 달라지는지.
+    # 초판(stock_daily)에서 소형주가 +74%/년까지 부풀었던 게 이 차이였다.
+    for uni, uname in ((None, "★ 전체 유니버스 (PIT · 상장폐지 포함) — 이 표를 보세요"),
+                       (fixed, "11년 생존 종목만 — 생존 편향 대조군")):
         results = {}
         print(f"\n\n{'#'*82}\n### {uname}\n{'#'*82}")
         for f, label in FACTORS:
