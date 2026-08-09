@@ -261,6 +261,7 @@ const TAB_GROUPS = [
     { key: 'liq', label: '유동성', emoji: '💧' },
     { key: 'inf', label: '물가', emoji: '🔥' },
     { key: 'fuel', label: '실탄', emoji: '💰' },
+    { key: 'cyc', label: '경기 국면', emoji: '🏭' },
     { key: 'mix', label: '종합', emoji: '🧭' },
     { key: 'alloc', label: '자산배분', emoji: '⚖️' },  // 종합(주식 타이밍) 다음 — "주식이 아니면 뭐가"
     { key: 'cmp', label: '비교', emoji: '📊' },   // 배경 지수를 주가에 겹쳐 검증하는 뷰라 여기
@@ -284,6 +285,7 @@ function renderSection(key) {
     case 'liq': return <LiquiditySection />
     case 'inf': return <InflationSection />
     case 'fuel': return <FuelSection />
+    case 'cyc': return <CycleSection />
     case 'mix': return <CompositeSection />
     case 'cmp': return <ComparisonSection />
     case 'alloc': return <AllocationSection />
@@ -1048,6 +1050,243 @@ function FuelBody({ latest, series, stats, market }) {
         />
       )}
       <StatsCard stats={stats} order={F_STAT_ORDER} note={FUEL_STATS_NOTE} countLabel={monthly ? '개월' : '표본'} />
+    </>
+  )
+}
+
+// ── 경기 국면: 통계청 경기종합지수 순환변동치 (ECOS 901Y067) ──
+// 이 프로젝트에서 사건 수·단조성·기간분할을 모두 통과한 유일한 거시 관계다.
+// 핵심이 둘인데 둘 다 직관과 반대라, 화면에서 그걸 분명히 말해야 한다.
+//   ① 방향이 역(-)이다 — 경기가 좋을수록 이후 주가가 나쁘다.
+//   ② 수준만으론 최근 15년에서 바닥권 신호가 죽는데, '방향'을 같이 보면 살아난다.
+//      가장 좋았던 국면은 '바닥권인데 더 나빠지는 중'(초과 +24.6%p·승률 82%,
+//      최근 15년에도 +16.0%p·67%). 반등을 확인하고 들어가면 오히려 평균 이하였다.
+// ⚠️ 선행지수는 주가 예측에 쓰면 안 된다 — 선행종합지수 구성지표에 코스피가 들어 있어
+//    순환논리다. 실측 최대 상관이 시차 -3개월(주가가 지수를 선행)이었다. 그래서 화면엔
+//    '참고용'으로만 띄우고 판단 근거로 쓰지 말라고 명시한다.
+// 발표 시차 약 2개월(6월치가 8월 말 공표) — 통계도 t+2 시점부터의 수익률로 계산한다.
+const CYC_QUADS = [
+  { key: 'peak_up', label: '정점권 · 더 좋아지는 중', hint: '과열 구간' },
+  { key: 'peak_dn', label: '정점권 · 꺾이는 중', hint: '둔화 진입' },
+  { key: 'mid', label: '중간대', hint: '신호 없음' },
+  { key: 'bot_up', label: '바닥권 · 반등 중', hint: '회복 확인' },
+  { key: 'bot_dn', label: '바닥권 · 더 나빠지는 중', hint: '최악 구간' },
+]
+
+function cycQuad(level, dir, hiThr, loThr) {
+  if (level >= hiThr) return dir >= 0 ? 'peak_up' : 'peak_dn'
+  if (level <= loThr) return dir > 0 ? 'bot_up' : 'bot_dn'
+  return 'mid'
+}
+
+// 월별 (순환변동치, 코스피) → 국면별 '공표 후 12개월' 통계.
+// 사건 수 = 붙어 있는 달 묶음의 개수. 개월 수로 세면 근거가 부풀려 보인다(이 프로젝트의 반복된 함정).
+function cycStats(months, CO, KS, fromYear) {
+  const ms = months.filter((m) => !fromYear || m >= fromYear)
+  if (ms.length < 40) return null
+  const lv = ms.map((m) => CO[m]).sort((a, b) => a - b)
+  const hiThr = lv[Math.floor(lv.length * 0.6)]
+  const loThr = lv[Math.floor(lv.length * 0.4)]
+  const idx = new Map(months.map((m, i) => [m, i]))
+  const rows = []
+  for (const m of ms) {
+    const i = idx.get(m)
+    if (i < 3 || i + 14 >= months.length) continue
+    const p0 = KS[months[i + 2]], p1 = KS[months[i + 14]]
+    if (!p0 || !p1) continue
+    rows.push({ m, i, q: cycQuad(CO[m], CO[m] - CO[months[i - 3]], hiThr, loThr), r: p1 / p0 - 1 })
+  }
+  if (!rows.length) return null
+  const base = rows.reduce((s, x) => s + x.r, 0) / rows.length
+  const by = {}
+  for (const q of CYC_QUADS) {
+    const g = rows.filter((x) => x.q === q.key)
+    if (!g.length) { by[q.key] = null; continue }
+    let ep = 0, prev = null
+    for (const x of g.sort((a, b) => a.i - b.i)) { if (prev === null || x.i !== prev + 1) ep++; prev = x.i }
+    const avg = g.reduce((s, x) => s + x.r, 0) / g.length
+    by[q.key] = { n: g.length, ep, avg, excess: avg - base, win: g.filter((x) => x.r > 0).length / g.length }
+  }
+  return { by, base, hiThr, loThr, n: rows.length, from: ms[0], to: ms[ms.length - 1] }
+}
+
+function CycleSection() {
+  const [d, setD] = useState(null)
+  const [state, setState] = useState('loading')
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        const grab = async (code) => {
+          let all = []
+          for (let f = 0; f < 4000; f += 1000) {
+            const { data, error } = await supabase.from('price_daily').select('dt,close')
+              .eq('market', 'KR').eq('code', code).order('dt').range(f, f + 999)
+            if (error) throw error
+            if (!data?.length) break
+            all = all.concat(data)
+            if (data.length < 1000) break
+          }
+          return all
+        }
+        const [co, le, ks] = await Promise.all(
+          [grab('kr_coincident'), grab('kr_leading'), grab('kr_index_m')])
+        if (!alive) return
+        if (!co.length || !ks.length) { setState('empty'); return }
+        const CO = {}, LE = {}, KS = {}
+        co.forEach((r) => { CO[r.dt.slice(0, 7)] = r.close })
+        le.forEach((r) => { LE[r.dt.slice(0, 7)] = r.close })
+        ks.forEach((r) => { KS[r.dt.slice(0, 7)] = r.close })
+        const months = Object.keys(CO).filter((m) => KS[m]).sort()
+        if (months.length < 60) { setState('empty'); return }
+        setD({ months, CO, LE, KS,
+               all: cycStats(months, CO, KS, null),
+               recent: cycStats(months, CO, KS, '2012') })
+        setState('ok')
+      } catch (e) {
+        if (!alive) return
+        const msg = `${e?.message || ''} ${e?.code || ''}`
+        setState(/exist|find the table|PGRST205|42P01/i.test(msg) ? 'empty' : 'error')
+      }
+    })()
+    return () => { alive = false }
+  }, [])
+
+  return (
+    <>
+      <header>
+        <h1>경기 국면</h1>
+        <p className="lead">
+          통계청 <b>경기종합지수 순환변동치</b>로 지금이 경기 사이클의 어디인지 봅니다.
+          이 프로젝트에서 <b>사건 수·단조성·기간분할을 모두 통과한 유일한 거시 지표</b>예요.
+          다만 <b>방향이 직관과 반대</b>입니다 — 경기가 좋을수록 이후 주가가 나빴습니다.
+        </p>
+      </header>
+      {state === 'loading' && <div className="col-msg">불러오는 중…</div>}
+      {state === 'error' && <div className="col-msg">데이터를 불러오지 못했어요</div>}
+      {state === 'empty' && <div className="col-msg soon">🚧<br /><b>데이터 준비 중</b></div>}
+      {state === 'ok' && d && <CycleBody d={d} />}
+    </>
+  )
+}
+
+function CycleBody({ d }) {
+  const { months, CO, LE, KS, all, recent } = d
+  const last = months[months.length - 1]
+  const li = months.length - 1
+  const dir = li >= 3 ? CO[last] - CO[months[li - 3]] : 0
+  const lv = months.map((m) => CO[m]).sort((a, b) => a - b)
+  const pct = lv.filter((v) => v <= CO[last]).length / lv.length * 100
+  const q = all ? cycQuad(CO[last], dir, all.hiThr, all.loThr) : 'mid'
+  const qMeta = CYC_QUADS.find((x) => x.key === q)
+  const nowAll = all?.by[q]
+  const nowRec = recent?.by[q]
+  const pc = (v) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`
+  // 차트: 최근 15년. 순환변동치와 코스피를 각자 범위로 정규화해 겹친다(단위가 달라 절대 비교 불가).
+  const view = months.slice(-180)
+  const cvs = view.map((m) => CO[m]), kvs = view.map((m) => KS[m])
+  const cLo = Math.min(...cvs), cHi = Math.max(...cvs)
+  const kLo = Math.min(...kvs), kHi = Math.max(...kvs)
+  const X = (i) => (i / (view.length - 1)) * 100
+  const Yc = (v) => 100 - ((v - cLo) / (cHi - cLo || 1)) * 96 - 2
+  const Yk = (v) => 100 - ((v - kLo) / (kHi - kLo || 1)) * 96 - 2
+
+  return (
+    <>
+      <section className="card">
+        <h2>🏭 지금 어디인가</h2>
+        <div className="cyc-now">
+          <div className="cyc-big">
+            <span className="cyc-val">{CO[last].toFixed(1)}</span>
+            <span className="cyc-sub">동행지수 순환변동치 · {last} 기준</span>
+            <span className="cyc-sub">1996년 이후 <b>{pct.toFixed(0)}백분위</b> ·
+              3개월 변화 <b>{dir >= 0 ? '+' : ''}{dir.toFixed(2)}</b>
+              ({dir >= 0 ? '개선 중' : '악화 중'})</span>
+          </div>
+          <div className="cyc-quad">
+            <span className="cyc-qlabel">{qMeta.label}</span>
+            <span className="cyc-qhint">{qMeta.hint}</span>
+            {nowAll && (
+              <span className="cyc-qstat">
+                과거 이 국면의 <b>공표 후 12개월</b>: 평균 <b>{pc(nowAll.avg)}</b>
+                (전체 평균 대비 <b style={{ color: nowAll.excess >= 0 ? '#c0392b' : '#2471a3' }}>
+                  {pc(nowAll.excess)}p</b>) · 승률 {(nowAll.win * 100).toFixed(0)}% · 사건 {nowAll.ep}건
+                {nowRec && <><br />최근 15년만: 평균 {pc(nowRec.avg)} (대비 {pc(nowRec.excess)}p) ·
+                  승률 {(nowRec.win * 100).toFixed(0)}% · 사건 {nowRec.ep}건</>}
+              </span>
+            )}
+          </div>
+        </div>
+        <p className="note">
+          ⏱️ <b>발표는 약 2개월 늦습니다</b> — {last}치가 지금 최신이고, 아래 통계도 그 시차를
+          반영해 <b>공표 시점부터의 12개월</b> 수익률로 계산했습니다(뒤늦게 안 값으로 과거를
+          맞히는 착시 방지).
+        </p>
+      </section>
+
+      <section className="card">
+        <h2>📊 국면별 이후 12개월 (공표 시차 반영)</h2>
+        <table className="stats">
+          <thead>
+            <tr><th>국면</th><th>사건</th><th>평균</th><th>전체 대비</th><th>승률</th>
+              <th>최근 15년 대비</th></tr>
+          </thead>
+          <tbody>
+            {CYC_QUADS.map((x) => {
+              const a = all?.by[x.key], r = recent?.by[x.key]
+              if (!a) return null
+              return (
+                <tr key={x.key} style={q === x.key ? { fontWeight: 800 } : undefined}>
+                  <td>{q === x.key ? '▶ ' : ''}{x.label}</td>
+                  <td>{a.ep}건</td>
+                  <td>{pc(a.avg)}</td>
+                  <td style={{ color: a.excess >= 0 ? '#c0392b' : '#2471a3' }}>{pc(a.excess)}p</td>
+                  <td>{(a.win * 100).toFixed(0)}%</td>
+                  <td style={{ color: r && r.excess >= 0 ? '#c0392b' : '#2471a3' }}>
+                    {r ? `${pc(r.excess)}p (${r.ep}건)` : '—'}</td>
+                </tr>
+              )
+            })}
+            <tr className="base"><td>전체 평균</td><td>—</td><td>{all ? pc(all.base) : '—'}</td>
+              <td>—</td><td>—</td><td>{recent ? pc(recent.base) : '—'}</td></tr>
+          </tbody>
+        </table>
+        <p className="note">
+          읽는 법 — <b>가장 좋았던 건 "바닥권인데 더 나빠지는 중"</b>이고,{' '}
+          <b>가장 나빴던 건 "정점권인데 더 좋아지는 중"</b>입니다. 경기가 좋아 보일 때가 주식엔
+          위험했고, 최악으로 보일 때가 좋았어요. 그리고 <b>"바닥권 · 반등 중"은 평균 이하</b>입니다 —
+          회복을 확인하고 들어가면 이미 늦었다는 뜻이에요.{' '}
+          <b>수준만 보면 최근 15년에 바닥권 신호가 사라지는데, 방향을 같이 보면 살아납니다.</b>
+        </p>
+        <p className="note hp-warn">
+          ⚠️ <b>선행지수 순환변동치는 주가 판단에 쓰지 마세요</b> (최신 {LE[last]?.toFixed(1) ?? '—'}).
+          통계청 <b>선행종합지수의 구성지표에 코스피가 들어 있어</b> 순환논리입니다. 실측해도
+          최대 상관이 시차 <b>-3개월</b>(주가가 지수를 3개월 <b>선행</b>)이라, 선행지수가 오르는 건
+          이미 오른 주가를 다시 읽는 것에 가까워요. 위 통계는 전부 <b>동행지수</b> 기준입니다
+          (동행종합지수엔 주가가 없습니다 — 취업자수·광공업생산·소매판매·건설기성·수입액 등).
+        </p>
+      </section>
+
+      <section className="card">
+        <h2>📈 동행지수 순환변동치 vs 코스피 (최근 15년)</h2>
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="cyc-chart">
+          <line x1="0" x2="100" y1={Yc(100)} y2={Yc(100)} className="cyc-mid" />
+          <polyline points={view.map((m, i) => `${X(i)},${Yk(KS[m])}`).join(' ')} className="cyc-ks" />
+          <polyline points={view.map((m, i) => `${X(i)},${Yc(CO[m])}`).join(' ')} className="cyc-co" />
+        </svg>
+        <div className="vp-chart-cap">
+          <span className="hp-legend">
+            <span><i style={{ background: '#e67e22' }} />동행 순환변동치 (기준선 100)</span>
+            <span><i style={{ background: '#64748b' }} />코스피</span>
+          </span>
+          <span>{view[0]} ~ {view[view.length - 1]}</span>
+        </div>
+        <p className="note">
+          두 선은 <b>단위가 달라 각자 범위로 정규화</b>했습니다 — 높낮이를 직접 비교하지 마시고
+          <b>모양과 시차</b>만 보세요. 코스피가 동행지수를 약 <b>9개월 선행</b>합니다(상관 +0.40).
+          주가가 실물경기의 선행지표이지 그 반대가 아닙니다.
+        </p>
+      </section>
     </>
   )
 }

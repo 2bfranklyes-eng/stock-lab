@@ -241,6 +241,106 @@ def run_ecos():
     print(f"[KR] ECOS 완료: 총 {total} rows" + (f"  (건너뜀: {', '.join(failed)})" if failed else ""))
 
 
+# ── 경기종합지수 순환변동치(통계청, ECOS 901Y067) 월별 ──
+# 이 프로젝트에서 검증을 통과한 유일한 거시 관계다. 1996~2026 355개월에서
+#   · 동행지수 순환변동치 '수준' → 공표 후 12개월 코스피: 밴드 5개가 완전 단조
+#     (바닥권 +31% / 정점권 -4%, 전체 +12.8%) · 사건 11~31개 · 기간 분할 4/4 부호 일치
+#   · 방향이 역(-)이다: 경기가 좋을수록 이후 주가가 나쁘다
+# ⚠️ 선행지수는 주가 예측에 쓰면 안 된다 — 통계청 선행종합지수의 구성지표에 코스피가
+#    들어 있어 순환논리다. 실측에서도 최대 상관이 시차 -3개월(주가가 지수를 선행)이었다.
+#    그래도 함께 받는 이유는 '선행지수를 보고 판단하면 안 된다'를 화면에서 보여주기 위해서다.
+# 발표 시차 약 2개월(6월치가 8월 말 공표) — 화면·백테스트 모두 이 시차를 반영해야 한다.
+ECOS_CYCLE_STAT = "901Y067"
+ECOS_CYCLE_ITEMS = {              # code → (ECOS 항목코드, 메타 name)
+    "kr_coincident": ("I16D", "동행지수 순환변동치"),
+    "kr_leading":    ("I16E", "선행지수 순환변동치"),
+}
+
+
+def fetch_ecos_monthly(stat, item, start="197001"):
+    """ECOS 월별 통계 한 항목 → {YYYY-MM-01: value}. 월 지표라 그 달 1일로 정규화한다."""
+    end = time.strftime("%Y%m")
+    url = (f"https://ecos.bok.or.kr/api/StatisticSearch/{ECOS_KEY}/json/kr/1/2000/"
+           f"{stat}/M/{start}/{end}/{item}")
+    with urllib.request.urlopen(url, timeout=60) as r:
+        d = json.loads(r.read().decode("utf-8"))
+    if "RESULT" in d:
+        print(f"  [KR] ECOS {stat}/{item}: {d['RESULT'].get('MESSAGE', '오류')}")
+        return {}
+    out = {}
+    for x in d.get("StatisticSearch", {}).get("row", []):
+        t, v = x.get("TIME", ""), (x.get("DATA_VALUE") or "").strip()
+        if len(t) == 6 and v not in ("", "-"):
+            try:
+                out[f"{t[:4]}-{t[4:6]}-01"] = float(v)
+            except ValueError:
+                pass
+    return out
+
+
+def run_kr_index_long():
+    """월말 코스피를 1996년부터 indicator_raw에 적재(code=kr_index_m).
+
+    kr_index는 2015년부터라(다른 지표와 창을 맞춘 것) 경기 국면 통계를 내기엔 짧다.
+    순환변동치는 1970년부터 있는데 주가가 11년뿐이면 국면이 몇 개 안 잡힌다.
+    kr_index를 늘리면 심리·유동성·자산배분 계산의 창이 통째로 바뀌므로 건드리지 않고,
+    월별 통계 전용 코드를 따로 둔다. 야후 ^KS11은 1996-12부터 준다."""
+    # get_series()는 fetch_close의 기본 시작일(2015-01-01)을 쓰므로 여기선 직접 부른다 —
+    # 이 코드의 존재 이유가 '더 긴 이력'이라 기본값을 쓰면 의미가 없다.
+    s = pd.Series(dtype="float64")
+    for attempt in (1, 2):
+        try:
+            s = fetch_close("^KS11", start="1990-01-01")
+            if not s.empty:
+                break
+        except Exception as e:
+            print(f"  [KR] kr_index_m: 시도{attempt} 오류 — {e}")
+        time.sleep(2)
+    if s.empty:
+        print("[KR] 월말 코스피(kr_index_m): 응답 없음 — 건너뜀")
+        return
+    sb.table("indicator_meta").upsert(
+        [{"code": "kr_index_m", "name": "코스피 월말종가(장기)", "market": "KR",
+          "category": "가격", "role": "price", "source": "yfinance:^KS11(월말)"}],
+        on_conflict="code").execute()
+    month = {}                                  # 같은 달이면 뒤엣값이 남아 월말 종가가 된다
+    for d, v in s.items():
+        month[d.strftime("%Y-%m-01")] = float(v)
+    upsert([{"market": "KR", "dt": dt, "code": "kr_index_m", "value": v}
+            for dt, v in month.items()])
+    print(f"  [KR] kr_index_m: {len(month)}개월  {min(month)} ~ {max(month)}")
+
+
+def run_ecos_cycle():
+    """경기 선행·동행지수 순환변동치를 indicator_raw(market=KR)에 적재. 1970-01부터."""
+    if not ECOS_KEY:
+        print("[KR] ECOS_API_KEY 없음 — 경기종합지수 수집 건너뜀")
+        return
+    sb.table("indicator_meta").upsert(
+        [{"code": code, "name": name, "market": "KR", "category": "경기",
+          "role": "cycle", "source": f"ecos:{ECOS_CYCLE_STAT}/{item}"}
+         for code, (item, name) in ECOS_CYCLE_ITEMS.items()], on_conflict="code").execute()
+    total, failed = 0, []
+    for code, (item, name) in ECOS_CYCLE_ITEMS.items():
+        try:
+            ser = fetch_ecos_monthly(ECOS_CYCLE_STAT, item)
+        except Exception as e:
+            failed.append(code)
+            print(f"  [KR] {code}: 오류 — {e}")
+            continue
+        if not ser:
+            failed.append(code)
+            continue
+        upsert([{"market": "KR", "dt": dt, "code": code, "value": v} for dt, v in ser.items()])
+        total += len(ser)
+        print(f"  [KR] {code} ({name}): {len(ser)}개월  {min(ser)} ~ {max(ser)}")
+        time.sleep(0.3)
+    sb.table("ingest_log").insert(
+        {"source": "ecos_cycle", "market": "KR", "rows": total,
+         "status": "ok" if not failed else "partial"}).execute()
+    print(f"[KR] 경기종합지수 완료: 총 {total} rows")
+
+
 # ── KRX 투자자별 순매수(코스피 전체) 일별 — 수급 원자료 ──
 # 왜 필요한가 — holders.py가 채우는 investor_flow는 종목별 실측이라 정밀하지만 2024-07부터고
 # 200종목뿐이다. 수급 가설(외국인이 언제 사고 파는가, 환율 레짐이 선행하는가, 개인 항복이
@@ -451,5 +551,7 @@ if __name__ == "__main__":
         run_fred()
     if "KR" in markets:                            # 한국 국내 금리(ECOS)는 yfinance 뒤에 별도 수집
         run_ecos()
+        run_ecos_cycle()                           # 경기 선행·동행지수 순환변동치(월별)
+        run_kr_index_long()                        # 월말 코스피 장기(경기 국면 통계용)
         run_kr_investor()                          # 코스피·코스닥 투자자별 순매수 + 거래대금
         run_kr_shorting()                          # 코스피·코스닥 투자자별 공매도 (둘 다 KRX 로그인 필요)

@@ -14,8 +14,13 @@ except Exception:
 load_dotenv()
 sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
 # 시장별로 공개할 지수들. 첫 번째가 대표 지수(다른 계산·백테스트가 쓰는 기준).
+#   경기 순환변동치(월별)도 여기 실어 공개한다 — 프론트의 「경기 국면」 카드가 읽는다.
+#   지수는 아니지만 (market, dt, code, close) 구조가 그대로 맞고, 이 표는 market 단위로
+#   전량 교체되므로 여기 등록해 두지 않으면 다음 크론에서 지워진다.
 CODES = {"US": ["us_index", "us_nasdaq", "us_dow"],   # S&P500 / 나스닥 / 다우
-         "KR": ["kr_index", "kr_kosdaq"]}             # 코스피 / 코스닥
+         "KR": ["kr_index", "kr_kosdaq",              # 코스피 / 코스닥
+                "kr_coincident", "kr_leading",        # 동행·선행지수 순환변동치
+                "kr_index_m"]}                        # 월말 코스피 장기(1996~)
 
 
 def fetch(market, code):
