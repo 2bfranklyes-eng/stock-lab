@@ -1350,6 +1350,203 @@ function momStats(months, KS) {
   return { by, base }
 }
 
+// ── 결합 신호: 에너지 + 경기 ──
+// 살아남은 네 신호(에너지·경기·산업금속·유동성) 중 둘만 쓴다. 더 넣으면 나빠지기 때문이다.
+//   · 신호 간 상관: 에너지↔경기 0.15로 사실상 독립인데, 경기↔유동성 0.48 ·
+//     산업금속↔유동성 0.41로 나머지 셋은 서로 겹친다 — 같은 얘기를 세 번 하는 셈.
+//   · 실제로 4개를 다 넣으면 전체 표본에선 스프레드가 커 보이지만(36.9%p) 두 하위 기간
+//     모두에서 2개 조합보다 못했다(전반 22.0 vs 25.2 / 후반 48.9 vs 50.3). 과최적화.
+//   · 유동성은 전반에 스프레드 -6.4%p로 부호가 아예 뒤집혔다. 섞으면 안 되는 신호다.
+// 둘 다 뒤집는 게 핵심 — 유가가 싸고 경기가 나쁠 때 이후 6개월이 좋았다(직관과 반대).
+// 검증: 최선20% 승률 전반 91% · 후반 90%, 최악20% 전반 7% · 후반 36%. 사건 18~29건.
+const CB_H = 120                 // 이후 120거래일(약 6개월) — 상관이 가장 컸던 구간
+const CB_LAG = 2                 // 순환변동치 공표 시차(개월). 이걸 안 빼면 미래를 미리 본 게 된다
+const CB_BANDS = [
+  { lo: 0.0, hi: 0.2, label: '최악 20%' }, { lo: 0.2, hi: 0.4, label: '하위' },
+  { lo: 0.4, hi: 0.6, label: '중간' }, { lo: 0.6, hi: 0.8, label: '상위' },
+  { lo: 0.8, hi: 1.0, label: '최선 20%' },
+]
+
+function lagMonth(dt, n) {
+  let y = Number(dt.slice(0, 4)), m = Number(dt.slice(5, 7)) - n
+  while (m <= 0) { y -= 1; m += 12 }
+  return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}`
+}
+
+// 월별 순환변동치 → 최근 10년(120개월) 창 백분위. 수준 자체는 시대마다 의미가 달라 순위로 본다.
+function cyclePercentile(coinByMonth) {
+  const ms = Object.keys(coinByMonth).sort()
+  const out = {}
+  for (let i = 0; i < ms.length; i++) {
+    const from = Math.max(0, i - 119)
+    const w = ms.slice(from, i + 1).map((m) => coinByMonth[m])
+    if (w.length < 60) continue
+    const cur = coinByMonth[ms[i]]
+    out[ms[i]] = w.slice(0, -1).filter((v) => cur > v).length / (w.length - 1) * 100
+  }
+  return out
+}
+
+function buildCombo(energyByDt, coinByMonth, pxByDt) {
+  const cp = cyclePercentile(coinByMonth)
+  const D = Object.keys(pxByDt).sort()
+  const pi = new Map(D.map((d, i) => [d, i]))
+  const rows = []
+  for (const d of D) {
+    const e = energyByDt[d]
+    const c = cp[lagMonth(d, CB_LAG)]
+    if (e == null || c == null) continue
+    const i = pi.get(d)
+    const fwd = i + CB_H < D.length ? (pxByDt[D[i + CB_H]] / pxByDt[d] - 1) * 100 : null
+    rows.push({ dt: d, i, E: 100 - e, C: 100 - c, score: ((100 - e) + (100 - c)) / 2, fwd })
+  }
+  if (rows.length < 300) return null
+
+  const scored = rows.filter((r) => r.fwd != null)
+  const sorted = [...scored].map((r) => r.score).sort((a, b) => a - b)
+  const q = (p) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))]
+  const thr = CB_BANDS.map((b) => ({ ...b, from: q(b.lo), to: q(Math.min(b.hi, 0.9999)) }))
+
+  const stat = (subset) => {
+    if (subset.length < 200) return null
+    const base = subset.reduce((s, r) => s + r.fwd, 0) / subset.length
+    return {
+      base,
+      by: thr.map((b) => {
+        const g = subset.filter((r) => r.score >= b.from && r.score <= b.to)
+        if (g.length < 30) return { ...b, n: 0 }
+        let ep = 0, prev = null
+        for (const r of g) { if (prev === null || r.i !== prev + 1) ep++; prev = r.i }
+        const avg = g.reduce((s, x) => s + x.fwd, 0) / g.length
+        return { ...b, n: g.length, ep, avg, excess: avg - base,
+                 win: g.filter((x) => x.fwd > 0).length / g.length }
+      }),
+    }
+  }
+  const last = rows[rows.length - 1]
+  const band = thr.find((b) => last.score >= b.from && last.score <= b.to) || thr[thr.length - 1]
+  return { rows, thr, last, band,
+           all: stat(scored),
+           early: stat(scored.filter((r) => r.dt <= '2020-12-31')),
+           late: stat(scored.filter((r) => r.dt >= '2021-01-01')) }
+}
+
+function ComboCard({ combo }) {
+  if (!combo) return null
+  const { rows, thr, last, band, all, early, late } = combo
+  const cur = all?.by.find((b) => b.label === band.label)
+  const pc = (v) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
+  const view = rows.slice(-756)          // 최근 3년
+  return (
+    <>
+      <section className="card">
+        <h2>🎯 결합 신호 — 에너지 + 경기</h2>
+        <p className="note" style={{ marginTop: 0 }}>
+          검증을 통과한 신호 둘만 합쳤어요. <b>유가가 싸고(에너지↓) 경기가 나쁠 때(순환변동치↓)</b>
+          이후 6개월이 좋았습니다 — 직관과 반대입니다. 둘의 상관이 <b>0.15</b>로 거의 독립이라
+          합칠 값어치가 있고, 나머지 신호(유동성·산업금속)는 경기와 0.4대로 겹쳐 넣으면 오히려
+          나빠져서 뺐습니다.
+        </p>
+        <div className="cyc-now">
+          <div className="cyc-big">
+            <span className="cyc-val">{last.score.toFixed(0)}</span>
+            <span className="cyc-sub">결합 점수 · {last.dt} 기준 (0~100, 높을수록 유리)</span>
+            <span className="cyc-sub">
+              에너지 <b>{last.E.toFixed(0)}</b> · 경기 <b>{last.C.toFixed(0)}</b> 의 평균
+            </span>
+          </div>
+          <div className="cyc-quad">
+            <span className="cyc-qlabel">{band.label}</span>
+            <span className="cyc-qhint">
+              구간 임계 {thr.map((b) => b.to.toFixed(0)).slice(0, 4).join(' / ')}
+            </span>
+            {cur && cur.n > 0 && (
+              <span className="cyc-qstat">
+                과거 이 구간의 <b>이후 6개월</b>: 평균 <b>{pc(cur.avg)}</b>
+                (전체 평균 대비 <b style={{ color: cur.excess >= 0 ? '#c0392b' : '#2471a3' }}>
+                  {pc(cur.excess)}p</b>) · 승률 {(cur.win * 100).toFixed(0)}% · 사건 {cur.ep}건
+              </span>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <section className="card">
+        <h2>📊 결합 점수 밴드별 → 이후 6개월 코스피</h2>
+        <table className="stats">
+          <thead>
+            <tr><th>구간</th><th>사건</th><th>평균</th><th>전체 대비</th><th>승률</th>
+              <th>전반 ~2020</th><th>후반 2021~</th></tr>
+          </thead>
+          <tbody>
+            {all?.by.map((b, i) => {
+              const e = early?.by[i], l = late?.by[i]
+              if (!b.n) return null
+              return (
+                <tr key={b.label} style={b.label === band.label ? { fontWeight: 800 } : undefined}>
+                  <td>{b.label === band.label ? '▶ ' : ''}{b.label}</td>
+                  <td>{b.ep}건</td><td>{pc(b.avg)}</td>
+                  <td style={{ color: b.excess >= 0 ? '#c0392b' : '#2471a3' }}>{pc(b.excess)}p</td>
+                  <td>{(b.win * 100).toFixed(0)}%</td>
+                  <td>{e?.n ? `${pc(e.excess)}p · ${(e.win * 100).toFixed(0)}%` : '—'}</td>
+                  <td>{l?.n ? `${pc(l.excess)}p · ${(l.win * 100).toFixed(0)}%` : '—'}</td>
+                </tr>
+              )
+            })}
+            <tr className="base"><td>전체 평균</td><td>—</td><td>{all ? pc(all.base) : '—'}</td>
+              <td>—</td><td>—</td>
+              <td>{early ? pc(early.base) : '—'}</td><td>{late ? pc(late.base) : '—'}</td></tr>
+          </tbody>
+        </table>
+        <p className="note">
+          <b>전반·후반 열이 핵심입니다.</b> 양 끝은 두 기간 모두 방향이 맞습니다 — 최선 20%는
+          플러스에 승률 80%대 후반, 최악 20%는 마이너스에 승률이 뚝 떨어집니다.
+          {' '}<b>다만 가운데는 전반에 뒤죽박죽입니다</b> — 하위가 중간·상위보다 좋게 나오는 식이에요.
+          이 신호는 <b>양 극단에서만</b> 쓸모가 있고, 중간 구간에선 아무 말도 안 한다고 보는 게 맞습니다.
+          {' '}(구간 임계는 <b>전체 표본 기준으로 고정</b>해 두 기간에 똑같이 적용했습니다 —
+          기간별로 다시 잡으면 수치가 더 좋아 보이지만 그건 사후에나 알 수 있는 경계라서요.)
+        </p>
+        <p className="note hp-warn">
+          ⚠️ <b>한계</b> — ① 6개월 창이 서로 겹쳐 사건 수만큼 독립적이지 않습니다.
+          ② 후반의 큰 수치는 2022년 유가 급등 사이클이 상당 부분 만들었습니다.
+          ③ 경기 성분은 <b>발표가 2개월 늦어</b>, 결합 점수의 절반은 두 달 전 정보입니다.
+          ④ <b>한국 전용</b>입니다 — 미국은 동행지수 순환변동치가 없어 같은 조합을 못 만듭니다.
+          ⑤ 네 신호 중 둘을 고른 것 자체가 사후 선택이라, 진짜 검증은 앞으로의 데이터가 합니다.
+        </p>
+      </section>
+
+      <section className="card">
+        <h2>📈 결합 점수 추이 (최근 3년)</h2>
+        <div className="chart-wrap">
+          <ResponsiveContainer width="100%" height={220}>
+            <LineChart data={view} margin={{ top: 12, right: 6, left: -22, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
+              <XAxis dataKey="dt" tick={{ fontSize: 10 }} minTickGap={48} />
+              <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} />
+              <Tooltip wrapperStyle={{ outline: 'none' }}
+                formatter={(v, n) => [v.toFixed(0), n]} />
+              <ReferenceLine y={thr[0].to} stroke="#2471a3" strokeDasharray="4 4"
+                label={{ value: '최악 20%', position: 'insideBottomRight', fontSize: 10, fill: '#2471a3' }} />
+              <ReferenceLine y={thr[3].to} stroke="#c0392b" strokeDasharray="4 4"
+                label={{ value: '최선 20%', position: 'insideTopRight', fontSize: 10, fill: '#c0392b' }} />
+              <Line type="monotone" dataKey="E" name="에너지(뒤집음)" stroke="#008300"
+                dot={false} strokeWidth={1.2} strokeOpacity={0.7} isAnimationActive={false} />
+              <Line type="monotone" dataKey="C" name="경기(뒤집음)" stroke="#4a3aa7"
+                dot={false} strokeWidth={1.2} strokeOpacity={0.7} isAnimationActive={false} />
+              <Line type="monotone" dataKey="score" name="결합 점수" stroke="#d97706"
+                dot={false} strokeWidth={2.4} isAnimationActive={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+        <p className="note">
+          굵은 주황이 결합 점수, 얇은 두 선이 성분입니다. <b>위로 갈수록 유리</b>(유가가 싸거나
+          경기가 나쁨). 빨강 점선 위가 과거 최선 20% 구간, 파랑 점선 아래가 최악 20% 구간이에요.
+        </p>
+      </section>
+    </>
+  )
+}
+
 function CycleSection() {
   const [d, setD] = useState(null)
   const [state, setState] = useState('loading')
@@ -1369,8 +1566,23 @@ function CycleSection() {
           }
           return all
         }
-        const [co, le, ks] = await Promise.all(
-          [grab('kr_coincident'), grab('kr_leading'), grab('kr_index_m')])
+        // 결합 신호는 '일별' 코스피와 에너지 백분위가 필요하다 — 월별 kr_index_m로는
+        // 6개월 선행 통계의 표본이 1/20로 줄어 밴드가 안 잡힌다.
+        const grabInf = async () => {
+          let all = []
+          for (let f = 0; f < 6000; f += 1000) {
+            const { data, error } = await supabase.from('inflation_daily').select('dt,c_energy')
+              .eq('market', 'KR').order('dt').range(f, f + 999)
+            if (error) throw error
+            if (!data?.length) break
+            all = all.concat(data)
+            if (data.length < 1000) break
+          }
+          return all
+        }
+        const [co, le, ks, ksd, ener] = await Promise.all(
+          [grab('kr_coincident'), grab('kr_leading'), grab('kr_index_m'),
+           grab('kr_index'), grabInf()])
         if (!alive) return
         if (!co.length || !ks.length) { setState('empty'); return }
         const CO = {}, LE = {}, KS = {}
@@ -1383,10 +1595,14 @@ function CycleSection() {
         const months = Object.keys(CO).filter((m) => KS[m]).sort()
         if (months.length < 60) { setState('empty'); return }
         const chartMonths = Object.keys(KS).filter((m) => m >= months[0]).sort()
+        const EN = {}, PXD = {}
+        ener.forEach((r) => { if (r.c_energy != null) EN[r.dt] = r.c_energy })
+        ksd.forEach((r) => { PXD[r.dt] = r.close })
         setD({ months, chartMonths, CO, LE, KS,
                all: cycStats(months, CO, KS, null),
                recent: cycStats(months, CO, KS, '2012'),
-               mom: momStats(chartMonths, KS) })
+               mom: momStats(chartMonths, KS),
+               combo: buildCombo(EN, CO, PXD) })
         setState('ok')
       } catch (e) {
         if (!alive) return
@@ -1416,7 +1632,7 @@ function CycleSection() {
 }
 
 function CycleBody({ d }) {
-  const { months, chartMonths, CO, LE, KS, all, recent, mom } = d
+  const { months, chartMonths, CO, LE, KS, all, recent, mom, combo } = d
   const last = months[months.length - 1]
   const li = months.length - 1
   const dir = li >= 3 ? CO[last] - CO[months[li - 3]] : 0
@@ -1439,6 +1655,8 @@ function CycleBody({ d }) {
 
   return (
     <>
+      {/* 결합 신호를 맨 위에 — 이 탭에서 가장 실전적인 값이고, 아래 경기 카드는 그 절반의 근거다 */}
+      <ComboCard combo={combo} />
       <section className="card">
         <h2>🏭 지금 어디인가</h2>
         <div className="cyc-now">
