@@ -1387,10 +1387,26 @@ function cyclePercentile(coinByMonth) {
   return out
 }
 
-function buildCombo(energyByDt, coinByMonth, pxByDt) {
+// 추세이탈 = 125거래일 이동평균 대비 %. 지수마다 휴장일이 달라 '값이 있는 날'만 세어 계산한다.
+function momSeries(D, byDt) {
+  const out = {}
+  let win = []
+  for (const d of D) {
+    const v = byDt[d]
+    if (v == null) { out[d] = null; continue }
+    win.push(v)
+    if (win.length > 125) win.shift()
+    out[d] = win.length >= 60 ? (v / (win.reduce((s, x) => s + x, 0) / win.length) - 1) * 100 : null
+  }
+  return out
+}
+
+function buildCombo(energyByDt, coinByMonth, pxByDt, kqByDt = {}) {
   const cp = cyclePercentile(coinByMonth)
   const D = Object.keys(pxByDt).sort()
   const pi = new Map(D.map((d, i) => [d, i]))
+  const ksMom = momSeries(D, pxByDt)
+  const kqMom = momSeries(D, kqByDt)
   const rows = []
   for (const d of D) {
     const e = energyByDt[d]
@@ -1398,7 +1414,9 @@ function buildCombo(energyByDt, coinByMonth, pxByDt) {
     if (e == null || c == null) continue
     const i = pi.get(d)
     const fwd = i + CB_H < D.length ? (pxByDt[D[i + CB_H]] / pxByDt[d] - 1) * 100 : null
-    rows.push({ dt: d, i, E: 100 - e, C: 100 - c, score: ((100 - e) + (100 - c)) / 2, fwd })
+    rows.push({ dt: d, i, E: 100 - e, C: 100 - c, score: ((100 - e) + (100 - c)) / 2, fwd,
+                ks: pxByDt[d] ?? null, kq: kqByDt[d] ?? null,
+                ks_m: ksMom[d] ?? null, kq_m: kqMom[d] ?? null })
   }
   if (rows.length < 300) return null
 
@@ -1431,12 +1449,35 @@ function buildCombo(energyByDt, coinByMonth, pxByDt) {
            late: stat(scored.filter((r) => r.dt >= '2021-01-01')) }
 }
 
+const CB_PX_MODES = [
+  { key: 'mom', label: '주가 추세이탈' },
+  { key: 'raw', label: '실제 주가' },
+  { key: 'off', label: '주가 숨기기' },
+]
+const CB_RANGES = [
+  { label: '1년', n: 252 }, { label: '3년', n: 756 },
+  { label: '5년', n: 1260 }, { label: '전체', n: Infinity },
+]
+
 function ComboCard({ combo }) {
+  const [pxMode, setPxMode] = useState('mom')
+  const [range, setRange] = useState(756)
   if (!combo) return null
   const { rows, thr, last, band, all, early, late } = combo
   const cur = all?.by.find((b) => b.label === band.label)
   const pc = (v) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
-  const view = rows.slice(-756)          // 최근 3년
+  const view = range === Infinity ? rows : rows.slice(-range)
+  const isMom = pxMode === 'mom'
+  const showPx = pxMode !== 'off'
+  // 결합 점수는 0~100 고정축이라, 단위가 다른 주가는 오른축으로 뺀다.
+  // 기본을 추세이탈로 두는 이유는 다른 탭과 같다 — 점수는 이미 추세 없는 값이라
+  // 실제 지수값을 겹치면 장기 상승 추세에 눌려 모양이 안 보인다.
+  const PX_LINES = [
+    { key: isMom ? 'ks_m' : 'ks', name: '코스피', color: '#111827', width: 1.6 },
+    { key: isMom ? 'kq_m' : 'kq', name: '코스닥', color: '#b45309', width: 1.2 },
+  ]
+  const pxFmt = (v) => (v == null ? '—'
+    : isMom ? `${v > 0 ? '+' : ''}${v.toFixed(1)}%` : Math.round(v).toLocaleString())
   return (
     <>
       <section className="card">
@@ -1516,31 +1557,70 @@ function ComboCard({ combo }) {
       </section>
 
       <section className="card">
-        <h2>📈 결합 점수 추이 (최근 3년)</h2>
+        <h2>📈 결합 점수 vs 주가</h2>
+        <div className="seg">
+          {CB_RANGES.map((r) => (
+            <button key={r.label} className={range === r.n ? 'on' : ''}
+              onClick={() => setRange(r.n)}>{r.label}</button>
+          ))}
+        </div>
+        <div className="seg">
+          {CB_PX_MODES.map((m) => (
+            <button key={m.key} className={pxMode === m.key ? 'on' : ''}
+              onClick={() => setPxMode(m.key)}>{m.label}</button>
+          ))}
+        </div>
         <div className="chart-wrap">
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={view} margin={{ top: 12, right: 6, left: -22, bottom: 0 }}>
+          <ResponsiveContainer width="100%" height={260}>
+            <LineChart data={view} margin={{ top: 12, right: showPx ? 2 : 6, left: -22, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
               <XAxis dataKey="dt" tick={{ fontSize: 10 }} minTickGap={48} />
-              <YAxis domain={[0, 100]} tick={{ fontSize: 10 }} />
+              <YAxis yAxisId="idx" domain={[0, 100]} tick={{ fontSize: 10 }} />
+              {showPx && (
+                <YAxis yAxisId="px" orientation="right" domain={['auto', 'auto']} width={46}
+                  tick={{ fontSize: 9 }}
+                  tickFormatter={(v) => (isMom ? `${Math.round(v)}%` : Math.round(v).toLocaleString())} />
+              )}
               <Tooltip wrapperStyle={{ outline: 'none' }}
-                formatter={(v, n) => [v.toFixed(0), n]} />
-              <ReferenceLine y={thr[0].to} stroke="#2471a3" strokeDasharray="4 4"
+                formatter={(v, n) => [PX_LINES.some((l) => l.name === n) ? pxFmt(v)
+                  : (v == null ? '—' : v.toFixed(0)), n]} />
+              <ReferenceLine yAxisId="idx" y={thr[0].to} stroke="#2471a3" strokeDasharray="4 4"
                 label={{ value: '최악 20%', position: 'insideBottomRight', fontSize: 10, fill: '#2471a3' }} />
-              <ReferenceLine y={thr[3].to} stroke="#c0392b" strokeDasharray="4 4"
+              <ReferenceLine yAxisId="idx" y={thr[3].to} stroke="#c0392b" strokeDasharray="4 4"
                 label={{ value: '최선 20%', position: 'insideTopRight', fontSize: 10, fill: '#c0392b' }} />
-              <Line type="monotone" dataKey="E" name="에너지(뒤집음)" stroke="#008300"
-                dot={false} strokeWidth={1.2} strokeOpacity={0.7} isAnimationActive={false} />
-              <Line type="monotone" dataKey="C" name="경기(뒤집음)" stroke="#4a3aa7"
-                dot={false} strokeWidth={1.2} strokeOpacity={0.7} isAnimationActive={false} />
-              <Line type="monotone" dataKey="score" name="결합 점수" stroke="#d97706"
+              {showPx && isMom && (
+                <ReferenceLine yAxisId="px" y={0} stroke="#cbd5e1" strokeDasharray="3 3" />
+              )}
+              {showPx && PX_LINES.map((l) => (
+                <Line key={l.key} yAxisId="px" type="monotone" dataKey={l.key} name={l.name}
+                  stroke={l.color} dot={false} strokeWidth={l.width}
+                  isAnimationActive={false} connectNulls />
+              ))}
+              <Line yAxisId="idx" type="monotone" dataKey="E" name="에너지(뒤집음)" stroke="#008300"
+                dot={false} strokeWidth={1.2} strokeOpacity={0.65} isAnimationActive={false} />
+              <Line yAxisId="idx" type="monotone" dataKey="C" name="경기(뒤집음)" stroke="#4a3aa7"
+                dot={false} strokeWidth={1.2} strokeOpacity={0.65} isAnimationActive={false} />
+              <Line yAxisId="idx" type="monotone" dataKey="score" name="결합 점수" stroke="#d97706"
                 dot={false} strokeWidth={2.4} isAnimationActive={false} />
             </LineChart>
           </ResponsiveContainer>
         </div>
         <p className="note">
-          굵은 주황이 결합 점수, 얇은 두 선이 성분입니다. <b>위로 갈수록 유리</b>(유가가 싸거나
-          경기가 나쁨). 빨강 점선 위가 과거 최선 20% 구간, 파랑 점선 아래가 최악 20% 구간이에요.
+          굵은 주황이 결합 점수(왼축), 얇은 두 선이 성분입니다. <b>위로 갈수록 유리</b>(유가가
+          싸거나 경기가 나쁨). 빨강 점선 위가 과거 최선 20% 구간, 파랑 점선 아래가 최악 20%예요.
+          {showPx && (
+            <> <b>검은 선 = 코스피 · 갈색 = 코스닥</b>(오른축)
+              {isMom && <>, <b>추세이탈</b>(125일 평균 대비 %)</>}.
+              {isMom
+                ? <> 결합 점수가 이미 추세 없는 값이라, 주가도 추세를 걷어내야 모양이 비교됩니다.</>
+                : <> 실제 지수값이라 장기 상승 추세에 눌려 순환 모양은 잘 안 보여요 —
+                    <b> 추세이탈</b>로 바꿔 보세요.</>}</>
+          )}
+        </p>
+        <p className="note">
+          <b>읽는 법</b> — 결합 점수가 <b>먼저</b> 오르고 주가가 <b>나중에</b> 따라오는지를 보세요.
+          같은 날 같이 움직이는 건 의미가 없습니다(이 프로젝트에서 그 착각으로 기각된 지표가 여럿).
+          점수는 6개월 뒤를 겨냥한 값이라, 겹쳐 보면 주황이 검정보다 <b>왼쪽에서</b> 꺾여야 맞습니다.
         </p>
       </section>
     </>
@@ -1580,9 +1660,9 @@ function CycleSection() {
           }
           return all
         }
-        const [co, le, ks, ksd, ener] = await Promise.all(
+        const [co, le, ks, ksd, kqd, ener] = await Promise.all(
           [grab('kr_coincident'), grab('kr_leading'), grab('kr_index_m'),
-           grab('kr_index'), grabInf()])
+           grab('kr_index'), grab('kr_kosdaq'), grabInf()])
         if (!alive) return
         if (!co.length || !ks.length) { setState('empty'); return }
         const CO = {}, LE = {}, KS = {}
@@ -1595,14 +1675,15 @@ function CycleSection() {
         const months = Object.keys(CO).filter((m) => KS[m]).sort()
         if (months.length < 60) { setState('empty'); return }
         const chartMonths = Object.keys(KS).filter((m) => m >= months[0]).sort()
-        const EN = {}, PXD = {}
+        const EN = {}, PXD = {}, KQD = {}
         ener.forEach((r) => { if (r.c_energy != null) EN[r.dt] = r.c_energy })
         ksd.forEach((r) => { PXD[r.dt] = r.close })
+        kqd.forEach((r) => { KQD[r.dt] = r.close })
         setD({ months, chartMonths, CO, LE, KS,
                all: cycStats(months, CO, KS, null),
                recent: cycStats(months, CO, KS, '2012'),
                mom: momStats(chartMonths, KS),
-               combo: buildCombo(EN, CO, PXD) })
+               combo: buildCombo(EN, CO, PXD, KQD) })
         setState('ok')
       } catch (e) {
         if (!alive) return
