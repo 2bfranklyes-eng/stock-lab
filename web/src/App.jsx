@@ -606,9 +606,44 @@ function ChartTooltip({ active, payload, label, config, market, mainKey, valueFm
 const TREND_PX = { US: { code: 'us_index', name: 'S&P500' }, KR: { code: 'kr_index', name: '코스피' } }
 const TREND_PX_MODES = [
   { key: 'mom', label: '주가 추세이탈' },
+  { key: 'both', label: '전부 같은 잣대' },
   { key: 'raw', label: '실제 주가' },
   { key: 'off', label: '주가 숨기기' },
 ]
+
+// '전부 같은 잣대' = 모든 선을 이동 표준화(z)해서 한 축에 올린다.
+// 왜 %가 아니라 z인가 — 지수는 0~100 점수라 %로 바꾸면 점수 2가 평균 40 대비 -95%처럼
+// 극단값이 나와 주가(±30%)를 납작하게 눌러버린다. 표준편차 단위로 재면 둘 다 ±2 안팎이라
+// 한 축에서 모양·시차가 그대로 비교된다. 단위가 다른 선(달러·점수·주가)을 겹치는 유일한 방법.
+// 창은 '행 기준' 125개 — 병합된 같은 행을 쓰므로 지수가 월별이면 주가도 같은 월별 창이 된다.
+// 축을 ±4σ로 고정하고 값도 거기서 자른다. 자동 축은 한 선이 튀면 눈금이 -3~9σ처럼
+// 비대칭으로 잡혀 0선이 화면 가운데를 벗어나고, 그러면 '같은 잣대'라는 목적 자체가 깨진다.
+const Z_CLAMP = 4
+const Z_TICKS = [-4, -2, 0, 2, 4]
+
+function rollingZ(rows, key, win = 125, minN = 30) {
+  const out = new Array(rows.length).fill(null)
+  // 이동 표준편차가 0에 가까운 구간(값이 한동안 평평한 계열 — 역레포·재무부계정이 그렇다)에서
+  // 그대로 나누면 z가 +12σ까지 튀어 다른 선을 전부 납작하게 만든다. 전체 표준편차의 10%를
+  // 하한으로 두고, 남는 극단은 ±5σ로 자른다. 모양을 보려는 화면이라 꼬리보다 가독성이 먼저다.
+  const all = rows.map((r) => r[key]).filter((v) => v != null)
+  if (all.length < minN) return out
+  const gm = all.reduce((s, v) => s + v, 0) / all.length
+  const gsd = Math.sqrt(all.reduce((s, v) => s + (v - gm) ** 2, 0) / all.length)
+  const floor = Math.max(gsd * 0.1, 1e-9)
+  for (let i = 0; i < rows.length; i++) {
+    let sum = 0, n = 0
+    const from = Math.max(0, i - win + 1)
+    for (let j = from; j <= i; j++) { const v = rows[j][key]; if (v != null) { sum += v; n++ } }
+    if (n < minN || rows[i][key] == null) continue
+    const mean = sum / n
+    let ss = 0
+    for (let j = from; j <= i; j++) { const v = rows[j][key]; if (v != null) ss += (v - mean) ** 2 }
+    const sd = Math.max(Math.sqrt(ss / n), floor)
+    out[i] = Math.max(-Z_CLAMP, Math.min(Z_CLAMP, (rows[i][key] - mean) / sd))
+  }
+  return out
+}
 // 시장당 한 번만 받아 8개 차트가 나눠 쓴다(심리·유동성·물가·실탄 × 미국·한국).
 const _pxCache = {}
 async function loadTrendPrice(market) {
@@ -656,6 +691,7 @@ function TrendChart({ series, config, market, title, refLines, note, mainKey, ra
   }, [market])
 
   const isMom = pxMode === 'mom'
+  const isBoth = pxMode === 'both'
   const showPx = pxMode !== 'off' && !!px
   // 지수 시계열의 날짜에 '그 날짜 이하의 가장 최근 주가'를 붙인다 — 지수가 주별·월별이어도
   // (실탄 탭) 휴장일이어도 값이 비지 않는다.
@@ -669,14 +705,36 @@ function TrendChart({ series, config, market, title, refLines, note, mainKey, ra
     })
   }, [series, px])
 
-  const shown = range === Infinity ? merged : merged.slice(-range)
+  const sliced = range === Infinity ? merged : merged.slice(-range)
+  // '전부 같은 잣대'는 보이는 구간 안에서 표준화한다 — 구간을 바꾸면 기준도 따라 바뀌어
+  // "이 구간 안에서 어느 쪽이 먼저 튀었나"가 보인다(지수화가 구간 첫날=100인 것과 같은 취지).
+  const shown = useMemo(() => {
+    if (!isBoth || !px) return sliced
+    const keys = [...config.map((c) => c.key), '_px']
+    const zs = {}
+    for (const k of keys) zs[k] = rollingZ(sliced, k)
+    return sliced.map((r, i) => {
+      const o = { ...r }
+      for (const k of keys) o['z_' + k] = zs[k][i]
+      return o
+    })
+  }, [sliced, isBoth, px, config])
+
   const events = eventsFor(market, shown)
-  const drawOrder = [...config.slice(1), config[0]]  // 성분 먼저 → 종합이 맨 위
+  const zf = (v) => (v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}σ`)
   const pxCfg = {
-    key: isMom ? '_pxm' : '_px', name: TREND_PX[market].name, color: '#111827', width: 1.6,
-    fmt: (v) => (v == null ? '—' : isMom ? `${v > 0 ? '+' : ''}${v.toFixed(1)}%` : Math.round(v).toLocaleString()),
+    key: isBoth ? 'z__px' : isMom ? '_pxm' : '_px',
+    name: TREND_PX[market].name, color: '#111827', width: 1.6,
+    fmt: (v) => (v == null ? '—' : isBoth ? zf(v)
+      : isMom ? `${v > 0 ? '+' : ''}${v.toFixed(1)}%` : Math.round(v).toLocaleString()),
   }
-  const tipConfig = showPx ? [...config, pxCfg] : config
+  // 표준화 모드에선 지수선도 z값을 그리므로 dataKey와 툴팁 포맷을 통째로 갈아끼운다
+  // origKey를 들고 다녀야 범례 on/off가 모드와 무관하게 같은 키로 걸린다
+  const idxCfg = isBoth
+    ? config.map((c) => ({ ...c, key: 'z_' + c.key, origKey: c.key, fmt: zf }))
+    : config.map((c) => ({ ...c, origKey: c.key }))
+  const idxDraw = [...idxCfg.slice(1), idxCfg[0]]   // 성분 먼저 → 종합이 맨 위
+  const tipConfig = showPx ? [...idxCfg, pxCfg] : idxCfg
   return (
     <section className="card">
       <h2>{title}</h2>
@@ -698,31 +756,37 @@ function TrendChart({ series, config, market, title, refLines, note, mainKey, ra
         <LineChart data={shown} margin={{ top: 18, right: showPx ? 2 : 8, left: -22, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
           <XAxis dataKey="dt" tick={{ fontSize: 10 }} minTickGap={48} />
-          <YAxis yAxisId="idx" domain={yDomain} tick={{ fontSize: 10 }} width={valueFmt ? 34 : undefined} />
-          {showPx && (
+          <YAxis yAxisId="idx" domain={isBoth ? [-Z_CLAMP, Z_CLAMP] : yDomain} tick={{ fontSize: 10 }}
+            width={isBoth ? 38 : (valueFmt ? 34 : undefined)}
+            ticks={isBoth ? Z_TICKS : undefined}
+            tickFormatter={isBoth ? (v) => `${v}σ` : undefined} />
+          {showPx && !isBoth && (
             <YAxis yAxisId="px" orientation="right" domain={['auto', 'auto']} width={44} tick={{ fontSize: 9 }}
               tickFormatter={(v) => (isMom ? `${Math.round(v)}%` : Math.round(v).toLocaleString())} />
           )}
-          <Tooltip content={(props) => <ChartTooltip {...props} config={tipConfig} market={market} mainKey={mainKey} valueFmt={valueFmt} />}
+          <Tooltip content={(props) => <ChartTooltip {...props} config={tipConfig} market={market}
+            mainKey={isBoth ? 'z_' + mainKey : mainKey} valueFmt={isBoth ? null : valueFmt} />}
             wrapperStyle={{ outline: 'none' }} />
-          {refLines.map((r) => (
+          {!isBoth && refLines.map((r) => (
             <ReferenceLine key={r.y} yAxisId="idx" y={r.y} stroke={r.color} strokeDasharray="4 4" />
           ))}
+          {/* 표준화 모드에선 0선(=자기 평균)이 유일하게 의미 있는 기준선 */}
+          {isBoth && <ReferenceLine yAxisId="idx" y={0} stroke="#94a3b8" strokeDasharray="4 4" />}
           {showPx && isMom && <ReferenceLine yAxisId="px" y={0} stroke="#cbd5e1" strokeDasharray="3 3" />}
           {events.map((e) => (
             <ReferenceLine key={e.dt + e.label} yAxisId="idx" x={e.x} stroke="#b0b4ba" strokeDasharray="2 3"
               label={<EventMarker evt={e} setTip={setEvtTip} />} />
           ))}
           {showPx && !hidden.has('_px') && (
-            <Line yAxisId="px" type="monotone" dataKey={pxCfg.key} name={pxCfg.name}
+            <Line yAxisId={isBoth ? 'idx' : 'px'} type="monotone" dataKey={pxCfg.key} name={pxCfg.name}
               stroke={pxCfg.color} dot={false} strokeWidth={pxCfg.width}
               isAnimationActive={false} connectNulls />
           )}
-          {drawOrder.map((s) => (
+          {idxDraw.map((s) => (
             <Line key={s.key} yAxisId="idx" type="monotone" dataKey={s.key} name={s.name}
               stroke={s.color} dot={false} strokeWidth={s.width}
-              strokeOpacity={s.key === mainKey ? 1 : 0.85}
-              hide={hidden.has(s.key)} isAnimationActive={false} />
+              strokeOpacity={s.origKey === mainKey ? 1 : 0.85}
+              hide={hidden.has(s.origKey)} isAnimationActive={false} connectNulls={isBoth} />
           ))}
         </LineChart>
       </ResponsiveContainer>
@@ -741,13 +805,21 @@ function TrendChart({ series, config, market, title, refLines, note, mainKey, ra
           </button>
         )}
       </div>
-      <p className="note">{note}</p>
+      {!isBoth && <p className="note">{note}</p>}
       {showPx && (
         <p className="note">
-          <b>검은 선 = {TREND_PX[market].name}</b>(오른축){isMom && <>, <b>추세이탈</b>(125일 평균 대비 %)</>}.
-          {isMom
-            ? <> 지수는 0~100으로 이미 추세가 없는 값이라, 주가도 추세를 걷어내야 <b>모양이 비교</b>됩니다.</>
-            : <> 실제 지수값이라 장기 상승 추세가 커서 순환 모양은 잘 안 보여요 — <b>추세이탈</b>로 바꿔 보세요.</>}
+          {isBoth
+            ? <><b>전부 같은 잣대</b> — 모든 선을 <b>이동 표준화(z)</b>해서 한 축에 올렸어요.
+                0 = 그 선의 최근 평균, +1σ = 평균보다 1표준편차 위. 단위가 달라도(달러·0~100 점수·주가)
+                <b> 한 화면에서 모양과 시차가 그대로 비교</b>됩니다. %가 아니라 표준편차를 쓰는 이유는,
+                0~100 점수를 %로 바꾸면 낮은 점수에서 값이 폭발해 주가를 납작하게 눌러버리기 때문이에요.
+                기준은 <b>보이는 구간</b>이라 구간을 바꾸면 같이 바뀝니다.</>
+            : <><b>검은 선 = {TREND_PX[market].name}</b>(오른축){isMom && <>, <b>추세이탈</b>(125일 평균 대비 %)</>}.
+                {isMom
+                  ? <> 지수와 축이 달라 높낮이는 비교하지 마세요 — 단위까지 맞춰 보시려면
+                      <b> 전부 같은 잣대</b>로 바꾸면 됩니다.</>
+                  : <> 실제 지수값이라 장기 추세가 커서 순환 모양은 잘 안 보여요 —
+                      <b> 추세이탈</b>이나 <b>전부 같은 잣대</b>로 바꿔 보세요.</>}</>}
           {' '}<b>비슷해 보인다고 예측력이 있는 건 아닙니다</b> — 같은 날 함께 움직이는(동행) 것과
           앞서 움직이는(선행) 건 다릅니다. 검증은 아래 밴드표로 하세요.
         </p>
