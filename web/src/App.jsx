@@ -588,7 +588,10 @@ function ChartTooltip({ active, payload, label, config, market, mainKey, valueFm
           <div key={e.dataKey} className={'tip-row' + (e.dataKey === mainKey ? ' main' : '')}>
             <span className="tip-name"><i style={{ background: e.color }} />{e.name}</span>
             <span className="tip-val">
-              {valueFmt ? <b>{valueFmt(e.value)}</b> : (<>{rawStr && <b>{rawStr}</b>}<em>{Math.round(e.value)}</em></>)}
+              {/* cfg.fmt = 그 선만의 표시법(주가·추세이탈처럼 0~100 점수가 아닌 값) */}
+              {cfg?.fmt ? <b>{cfg.fmt(e.value)}</b>
+                : valueFmt ? <b>{valueFmt(e.value)}</b>
+                : (<>{rawStr && <b>{rawStr}</b>}<em>{Math.round(e.value)}</em></>)}
             </span>
           </div>
         )
@@ -598,20 +601,82 @@ function ChartTooltip({ active, payload, label, config, market, mainKey, valueFm
   )
 }
 
-// 공용 추이 차트: 종합선 + 성분선 + 구간선택 + 이벤트선 + 커스텀 범례.
+// 지수 차트에 겹칠 대표 주가. 시장당 하나만 — 여러 개 얹으면 지수선이 안 보인다
+// (여러 지수를 같이 보는 건 '비교' 탭의 몫).
+const TREND_PX = { US: { code: 'us_index', name: 'S&P500' }, KR: { code: 'kr_index', name: '코스피' } }
+const TREND_PX_MODES = [
+  { key: 'mom', label: '주가 추세이탈' },
+  { key: 'raw', label: '실제 주가' },
+  { key: 'off', label: '주가 숨기기' },
+]
+// 시장당 한 번만 받아 8개 차트가 나눠 쓴다(심리·유동성·물가·실탄 × 미국·한국).
+const _pxCache = {}
+async function loadTrendPrice(market) {
+  if (_pxCache[market]) return _pxCache[market]
+  const p = (async () => {
+    let all = []
+    for (let f = 0; f < 6000; f += 1000) {
+      const { data, error } = await supabase.from('price_daily').select('dt,close')
+        .eq('market', market).eq('code', TREND_PX[market].code).order('dt').range(f, f + 999)
+      if (error) throw error
+      if (!data?.length) break
+      all = all.concat(data)
+      if (data.length < 1000) break
+    }
+    // 추세이탈 = 125거래일 평균 대비 %. 지수 시계열이 월별이어도 주가 쪽은 늘 일별로 계산한다.
+    const dts = all.map((r) => r.dt)
+    const mom = all.map((r, i) => {
+      let sum = 0, n = 0
+      for (let j = Math.max(0, i - 124); j <= i; j++) { sum += all[j].close; n++ }
+      return n >= 60 ? (r.close / (sum / n) - 1) * 100 : null
+    })
+    return { dts, close: all.map((r) => r.close), mom }
+  })()
+  _pxCache[market] = p
+  return p
+}
+
+// 공용 추이 차트: 종합선 + 성분선 + 주가 겹치기 + 구간선택 + 이벤트선 + 커스텀 범례.
 //   config[0] = 종합(범례 맨 앞, z축 맨 위). mainKey = 종합 dataKey.
 function TrendChart({ series, config, market, title, refLines, note, mainKey, ranges = RANGES, defaultRange = 756, yDomain = [0, 100], valueFmt = null }) {
   const [range, setRange] = useState(defaultRange)   // 기본 3년(또는 지정값)
   const [hidden, setHidden] = useState(() => new Set())
   const [evtTip, setEvtTip] = useState(null)         // 이벤트 이모지에 커서 올렸을 때
+  const [pxMode, setPxMode] = useState('mom')        // 기본은 추세이탈 — 지수와 모양이 바로 비교된다
+  const [px, setPx] = useState(null)
   const toggle = (k) => setHidden((h) => {
     const n = new Set(h)
     if (n.has(k)) n.delete(k); else n.add(k)
     return n
   })
-  const shown = range === Infinity ? series : series.slice(-range)
+  useEffect(() => {
+    let alive = true
+    loadTrendPrice(market).then((p) => { if (alive) setPx(p) }).catch(() => {})
+    return () => { alive = false }
+  }, [market])
+
+  const isMom = pxMode === 'mom'
+  const showPx = pxMode !== 'off' && !!px
+  // 지수 시계열의 날짜에 '그 날짜 이하의 가장 최근 주가'를 붙인다 — 지수가 주별·월별이어도
+  // (실탄 탭) 휴장일이어도 값이 비지 않는다.
+  const merged = useMemo(() => {
+    if (!px) return series
+    let i = 0
+    return series.map((r) => {
+      while (i + 1 < px.dts.length && px.dts[i + 1] <= r.dt) i++
+      const ok = px.dts[i] <= r.dt
+      return { ...r, _px: ok ? px.close[i] : null, _pxm: ok ? px.mom[i] : null }
+    })
+  }, [series, px])
+
+  const shown = range === Infinity ? merged : merged.slice(-range)
   const events = eventsFor(market, shown)
   const drawOrder = [...config.slice(1), config[0]]  // 성분 먼저 → 종합이 맨 위
+  const pxCfg = {
+    key: isMom ? '_pxm' : '_px', name: TREND_PX[market].name, color: '#111827', width: 1.6,
+    fmt: (v) => (v == null ? '—' : isMom ? `${v > 0 ? '+' : ''}${v.toFixed(1)}%` : Math.round(v).toLocaleString()),
+  }
+  const tipConfig = showPx ? [...config, pxCfg] : config
   return (
     <section className="card">
       <h2>{title}</h2>
@@ -621,24 +686,40 @@ function TrendChart({ series, config, market, title, refLines, note, mainKey, ra
             onClick={() => setRange(r.days)}>{r.label}</button>
         ))}
       </div>
+      <div className="seg">
+        {TREND_PX_MODES.map((m) => (
+          <button key={m.key} className={pxMode === m.key ? 'on' : ''}
+            onClick={() => setPxMode(m.key)}>{m.label}</button>
+        ))}
+      </div>
       <div className="chart-wrap">
       <EventTip tip={evtTip} />
       <ResponsiveContainer width="100%" height={248}>
-        <LineChart data={shown} margin={{ top: 18, right: 8, left: -22, bottom: 0 }}>
+        <LineChart data={shown} margin={{ top: 18, right: showPx ? 2 : 8, left: -22, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
           <XAxis dataKey="dt" tick={{ fontSize: 10 }} minTickGap={48} />
-          <YAxis domain={yDomain} tick={{ fontSize: 10 }} width={valueFmt ? 34 : undefined} />
-          <Tooltip content={(props) => <ChartTooltip {...props} config={config} market={market} mainKey={mainKey} valueFmt={valueFmt} />}
+          <YAxis yAxisId="idx" domain={yDomain} tick={{ fontSize: 10 }} width={valueFmt ? 34 : undefined} />
+          {showPx && (
+            <YAxis yAxisId="px" orientation="right" domain={['auto', 'auto']} width={44} tick={{ fontSize: 9 }}
+              tickFormatter={(v) => (isMom ? `${Math.round(v)}%` : Math.round(v).toLocaleString())} />
+          )}
+          <Tooltip content={(props) => <ChartTooltip {...props} config={tipConfig} market={market} mainKey={mainKey} valueFmt={valueFmt} />}
             wrapperStyle={{ outline: 'none' }} />
           {refLines.map((r) => (
-            <ReferenceLine key={r.y} y={r.y} stroke={r.color} strokeDasharray="4 4" />
+            <ReferenceLine key={r.y} yAxisId="idx" y={r.y} stroke={r.color} strokeDasharray="4 4" />
           ))}
+          {showPx && isMom && <ReferenceLine yAxisId="px" y={0} stroke="#cbd5e1" strokeDasharray="3 3" />}
           {events.map((e) => (
-            <ReferenceLine key={e.dt + e.label} x={e.x} stroke="#b0b4ba" strokeDasharray="2 3"
+            <ReferenceLine key={e.dt + e.label} yAxisId="idx" x={e.x} stroke="#b0b4ba" strokeDasharray="2 3"
               label={<EventMarker evt={e} setTip={setEvtTip} />} />
           ))}
+          {showPx && !hidden.has('_px') && (
+            <Line yAxisId="px" type="monotone" dataKey={pxCfg.key} name={pxCfg.name}
+              stroke={pxCfg.color} dot={false} strokeWidth={pxCfg.width}
+              isAnimationActive={false} connectNulls />
+          )}
           {drawOrder.map((s) => (
-            <Line key={s.key} type="monotone" dataKey={s.key} name={s.name}
+            <Line key={s.key} yAxisId="idx" type="monotone" dataKey={s.key} name={s.name}
               stroke={s.color} dot={false} strokeWidth={s.width}
               strokeOpacity={s.key === mainKey ? 1 : 0.85}
               hide={hidden.has(s.key)} isAnimationActive={false} />
@@ -653,8 +734,24 @@ function TrendChart({ series, config, market, title, refLines, note, mainKey, ra
             {s.name}
           </button>
         ))}
+        {showPx && (
+          <button className={hidden.has('_px') ? 'off' : ''} onClick={() => toggle('_px')}>
+            <span className="swatch" style={{ background: pxCfg.color, height: 3 }} />
+            {pxCfg.name}{isMom ? ' 추세이탈' : ''}
+          </button>
+        )}
       </div>
       <p className="note">{note}</p>
+      {showPx && (
+        <p className="note">
+          <b>검은 선 = {TREND_PX[market].name}</b>(오른축){isMom && <>, <b>추세이탈</b>(125일 평균 대비 %)</>}.
+          {isMom
+            ? <> 지수는 0~100으로 이미 추세가 없는 값이라, 주가도 추세를 걷어내야 <b>모양이 비교</b>됩니다.</>
+            : <> 실제 지수값이라 장기 상승 추세가 커서 순환 모양은 잘 안 보여요 — <b>추세이탈</b>로 바꿔 보세요.</>}
+          {' '}<b>비슷해 보인다고 예측력이 있는 건 아닙니다</b> — 같은 날 함께 움직이는(동행) 것과
+          앞서 움직이는(선행) 건 다릅니다. 검증은 아래 밴드표로 하세요.
+        </p>
+      )}
     </section>
   )
 }
