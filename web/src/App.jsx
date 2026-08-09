@@ -92,16 +92,28 @@ const LIQ_STATS_NOTE = (
 // raw(point, market): 유동성과 같은 방식 — 성분 점수(0~100) 옆에 대응하는 원물 시세를 띄운다.
 //   기대인플레는 미국이 TIP/IEF '비율'이라 자연스러운 단위가 없어 한국(원/달러)만 표시.
 const usdFmt = (v, d = 2) => (v == null ? null : '$' + v.toFixed(d))
+// 한국 물가 점수는 '원화 환산' 원자재로 계산된다 — inflation.py: pct_rank(copper * usdkrw).
+// 그런데 실수치로 달러 원값을 붙이면 점수와 기준 통화가 어긋난다. 2026-07-24이 그 예로,
+// 달러 구리 $6.32는 1년 범위에서 91%ile인데 화면 점수는 82였다(원화 9,316원의 위치).
+// "$6.32인데 82?"가 여기서 나왔다. 한국은 원화값을 앞세우고 달러는 괄호로 병기한다.
+const cmdRaw = (key, d = 2) => (p, m) => {
+  const v = p[key]
+  if (v == null) return null
+  if (m !== 'KR') return usdFmt(v, d)
+  return p.raw_usdkrw ? `${Math.round(v * p.raw_usdkrw).toLocaleString()}원 (${usdFmt(v, d)})`
+    : usdFmt(v, d)
+}
 const I_SERIES = [
   { key: 'i_score', name: '물가(종합)', color: '#d97706', width: 2.2 },
   { key: 'c_be', name: '기대인플레', color: '#2a78d6', width: 1.3,
+    // 기대인플레만 글로벌 공통(TIP/IEF)이라 환산하지 않는다 — 한국은 참고로 원/달러를 보여준다
     raw: (p, m) => (m === 'KR' ? wonFmt(p.raw_usdkrw) : null) },
   { key: 'c_energy', name: '에너지', color: '#008300', width: 1.3,
-    raw: (p) => usdFmt(p.raw_wti, 1) },
+    raw: cmdRaw('raw_wti', 1) },
   // 식품 = 옥수수·밀·대두 등가중 지수라 자연스러운 단위가 없어 실수치는 생략.
   { key: 'c_food', name: '식품', color: '#d55181', width: 1.3 },
   { key: 'c_metal', name: '산업금속', color: '#4a3aa7', width: 1.3,
-    raw: (p) => usdFmt(p.raw_copper) },
+    raw: cmdRaw('raw_copper') },
 ]
 // 물가는 온도계식: 낮을수록 저물가(파랑)·높을수록 고물가(빨강) — 심리 팔레트와 같은 방향.
 const I_BANDS = [
@@ -817,12 +829,12 @@ function TrendChart({ series, config, market, title, refLines, note, mainKey, ra
         <p className="note">
           {note}
           {/* 점수를 절대 수준으로 오해하는 걸 막는다 — 툴팁은 커서를 올려야 보이므로 여기에도 쓴다.
-              예: 구리가 $2.89(2020)일 때도 94, $6.69(2026)일 때도 100. 값이 두 배 넘게 달라도
-              '각자의 그 시점 1년 범위에서 거의 꼭대기'라 둘 다 높다. */}
+              구리 예시를 쓰지 않는 이유: 한국 물가 점수는 원화 환산값 기준이라 달러 구리로 예를
+              들면 또 다른 오해가 된다(그 불일치를 이번에 고쳤다). 통화 얘기 없이 일반화한다. */}
           {scoreWin && (
-            <> {' '}<b>0~100은 절대 수준이 아니라 {scoreWin} 안에서의 위치</b>입니다 — 같은 점수라도
-              시기가 다르면 실제 수치는 크게 다를 수 있어요(예: 구리가 $2.89일 때도 $6.69일 때도
-              90점대. 각자 그 시점 {scoreWin} 범위의 꼭대기라서요).</>
+            <> {' '}<b>0~100은 절대 수준이 아니라 {scoreWin} 안에서의 위치</b>입니다 — 값이 그대로여도{' '}
+              {scoreWin} 범위가 바뀌면 점수는 달라지고, 반대로 실제 수치가 두 배여도 각자 자기
+              범위의 꼭대기면 둘 다 90점대가 나옵니다. 시기가 다른 두 점수를 절대 비교하지 마세요.</>
           )}
         </p>
       )}
