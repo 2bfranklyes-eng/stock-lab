@@ -1110,6 +1110,43 @@ function cycStats(months, CO, KS, fromYear) {
   return { by, base, hiThr, loThr, n: rows.length, from: ms[0], to: ms[ms.length - 1] }
 }
 
+// 주가 추세이탈(12개월 평균 대비 %) — 순환변동치와 달리 발표 시차가 없어 '오늘'을 말해준다.
+// 경기 국면이 두 달 전 상태밖에 못 알려주므로, 지금 위치는 이쪽으로 봐야 한다.
+const MOM_BANDS = [
+  { lo: -999, hi: -10, label: '-10% 이하 (급락 뒤)' },
+  { lo: -10, hi: 0, label: '-10% ~ 0%' },
+  { lo: 0, hi: 10, label: '0% ~ +10%' },
+  { lo: 10, hi: 25, label: '+10% ~ +25%' },
+  { lo: 25, hi: 999, label: '+25% 이상 (과열)' },
+]
+const momOf = (months, KS, i) => {
+  let sum = 0, n = 0
+  for (let j = Math.max(0, i - 11); j <= i; j++) { const v = KS[months[j]]; if (v != null) { sum += v; n++ } }
+  return n >= 6 ? (KS[months[i]] / (sum / n) - 1) * 100 : null
+}
+
+function momStats(months, KS) {
+  const rows = []
+  for (let i = 0; i < months.length - 12; i++) {
+    const m = momOf(months, KS, i)
+    const p0 = KS[months[i]], p1 = KS[months[i + 12]]
+    if (m == null || !p0 || !p1) continue
+    rows.push({ i, m, r: (p1 / p0 - 1) * 100 })
+  }
+  if (!rows.length) return null
+  const base = rows.reduce((s, x) => s + x.r, 0) / rows.length
+  const by = MOM_BANDS.map((b) => {
+    const g = rows.filter((x) => x.m >= b.lo && x.m < b.hi)
+    if (g.length < 8) return { ...b, n: 0 }
+    let ep = 0, prev = null
+    for (const x of g) { if (prev === null || x.i !== prev + 1) ep++; prev = x.i }
+    return { ...b, n: g.length, ep,
+             avg: g.reduce((s, x) => s + x.r, 0) / g.length,
+             win: g.filter((x) => x.r > 0).length / g.length }
+  })
+  return { by, base }
+}
+
 function CycleSection() {
   const [d, setD] = useState(null)
   const [state, setState] = useState('loading')
@@ -1137,11 +1174,16 @@ function CycleSection() {
         co.forEach((r) => { CO[r.dt.slice(0, 7)] = r.close })
         le.forEach((r) => { LE[r.dt.slice(0, 7)] = r.close })
         ks.forEach((r) => { KS[r.dt.slice(0, 7)] = r.close })
+        // 통계용(둘 다 있는 달)과 차트용(주가가 있는 달 전부)을 나눈다.
+        // 순환변동치는 약 2개월 늦게 나오는데 둘의 교집합만 그리면 주가 선까지 거기서 끊겨,
+        // 차트 오른쪽 끝이 두 달 전 상태인 걸 모르고 '지금'으로 읽게 된다(실사용에서 나온 오독).
         const months = Object.keys(CO).filter((m) => KS[m]).sort()
         if (months.length < 60) { setState('empty'); return }
-        setD({ months, CO, LE, KS,
+        const chartMonths = Object.keys(KS).filter((m) => m >= months[0]).sort()
+        setD({ months, chartMonths, CO, LE, KS,
                all: cycStats(months, CO, KS, null),
-               recent: cycStats(months, CO, KS, '2012') })
+               recent: cycStats(months, CO, KS, '2012'),
+               mom: momStats(chartMonths, KS) })
         setState('ok')
       } catch (e) {
         if (!alive) return
@@ -1171,7 +1213,7 @@ function CycleSection() {
 }
 
 function CycleBody({ d }) {
-  const { months, CO, LE, KS, all, recent } = d
+  const { months, chartMonths, CO, LE, KS, all, recent, mom } = d
   const last = months[months.length - 1]
   const li = months.length - 1
   const dir = li >= 3 ? CO[last] - CO[months[li - 3]] : 0
@@ -1182,6 +1224,15 @@ function CycleBody({ d }) {
   const nowAll = all?.by[q]
   const nowRec = recent?.by[q]
   const pc = (v) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`
+  // 경기 국면은 두 달 전 상태밖에 못 말한다. '오늘'은 주가 추세이탈로 따로 보여준다 —
+  // 이게 없으면 차트 오른쪽 끝(두 달 전 과열)을 현재로 읽는 오독이 그대로 남는다.
+  const lastKs = chartMonths[chartMonths.length - 1]
+  const nowMom = momOf(chartMonths, KS, chartMonths.length - 1)
+  const momBand = nowMom == null ? null
+    : mom?.by.find((b) => nowMom >= b.lo && nowMom < b.hi && b.n > 0)
+  const lagMonths = months.length && chartMonths.length
+    ? (Number(lastKs.slice(0, 4)) * 12 + Number(lastKs.slice(5, 7)))
+      - (Number(last.slice(0, 4)) * 12 + Number(last.slice(5, 7))) : 0
 
   return (
     <>
@@ -1209,10 +1260,32 @@ function CycleBody({ d }) {
             )}
           </div>
         </div>
+        {nowMom != null && (
+          <div className="cyc-now cyc-today">
+            <div className="cyc-big">
+              <span className="cyc-val cyc-val-px">{nowMom > 0 ? '+' : ''}{nowMom.toFixed(1)}%</span>
+              <span className="cyc-sub">코스피 추세이탈 · <b>{lastKs}</b> 기준
+                {lagMonths > 0 && <> (경기지표보다 <b>{lagMonths}개월 최신</b>)</>}</span>
+              <span className="cyc-sub">12개월 평균 대비. 시차가 없어 <b>지금</b>을 말해줍니다</span>
+            </div>
+            <div className="cyc-quad">
+              <span className="cyc-qlabel">{momBand ? momBand.label : '—'}</span>
+              <span className="cyc-qhint">주가 자체의 과열·침체 위치</span>
+              {momBand && momBand.n > 0 && (
+                <span className="cyc-qstat">
+                  과거 이 구간의 <b>이후 12개월</b>: 평균 <b>{momBand.avg.toFixed(1)}%</b>
+                  (전체 평균 {mom.base.toFixed(1)}%) · 승률 {(momBand.win * 100).toFixed(0)}% ·
+                  사건 {momBand.ep}건
+                </span>
+              )}
+            </div>
+          </div>
+        )}
         <p className="note">
-          ⏱️ <b>발표는 약 2개월 늦습니다</b> — {last}치가 지금 최신이고, 아래 통계도 그 시차를
-          반영해 <b>공표 시점부터의 12개월</b> 수익률로 계산했습니다(뒤늦게 안 값으로 과거를
-          맞히는 착시 방지).
+          ⏱️ <b>경기지표는 약 2개월 늦게 나옵니다</b> — {last}치가 최신이라,{' '}
+          <b>위쪽 경기 판정은 지금이 아니라 {last} 상태</b>입니다. 아래 통계도 그 시차를 반영해
+          <b>공표 시점부터의 12개월</b> 수익률로 계산했어요(뒤늦게 안 값으로 과거를 맞히는 착시 방지).
+          <b> 오늘 위치는 추세이탈({lastKs})로 보세요</b> — 주가는 시차가 없습니다.
         </p>
       </section>
 
@@ -1259,7 +1332,7 @@ function CycleBody({ d }) {
         </p>
       </section>
 
-      <CycleChart months={months} CO={CO} LE={LE} KS={KS} />
+      <CycleChart months={chartMonths} coEnd={last} CO={CO} LE={LE} KS={KS} />
     </>
   )
 }
@@ -1278,7 +1351,7 @@ const CYC_PMODES = [
   { key: 'raw', label: '실제 주가' },
 ]
 
-function CycleChart({ months, CO, LE, KS }) {
+function CycleChart({ months, coEnd, CO, LE, KS }) {
   const [range, setRange] = useState(180)
   const [pmode, setPmode] = useState('mom')
   const [hidden, setHidden] = useState(() => new Set(['lead']))   // 선행지수는 기본 꺼둠(순환논리)
@@ -1288,10 +1361,12 @@ function CycleChart({ months, CO, LE, KS }) {
 
   // 추세이탈 = 12개월 이동평균 대비 %. 종합 탭은 일별이라 125일을 쓰는데, 여기는 월별이라
   // 같은 '약 1년' 창을 12개월로 잡는다. 초반 11개월은 창이 안 차 null.
+  // 순환변동치가 없는 최근 달(발표 시차 구간)은 null로 두면 주황선만 거기서 멈추고
+  // 주가선은 최신까지 이어진다 — 오른쪽 끝이 '지금'인지 '두 달 전'인지 눈으로 갈린다.
   const data = useMemo(() => months.map((m, i) => {
     let sum = 0, n = 0
     for (let j = Math.max(0, i - 11); j <= i; j++) { if (KS[months[j]] != null) { sum += KS[months[j]]; n++ } }
-    return { dt: m, coin: CO[m], lead: LE[m] ?? null, kospi: KS[m],
+    return { dt: m, coin: CO[m] ?? null, lead: LE[m] ?? null, kospi: KS[m],
              mom_kospi: n >= 6 ? (KS[m] / (sum / n) - 1) * 100 : null }
   }), [months, CO, LE, KS])
 
@@ -1345,10 +1420,18 @@ function CycleChart({ months, CO, LE, KS }) {
             <ReferenceLine yAxisId="idx" y={100} stroke="#94a3b8" strokeDasharray="4 4" />
             {isMom && <ReferenceLine yAxisId="px" y={0} stroke="#cbd5e1" strokeDasharray="3 3" />}
             {isBase && <ReferenceLine yAxisId="px" y={100} stroke="#cbd5e1" strokeDasharray="3 3" />}
+            {/* 경기지표가 끊기는 지점 — 이 오른쪽은 주가만 있는 '아직 안 나온' 구간이다 */}
+            {shown.some((r) => r.dt === coEnd) && (
+              <ReferenceLine yAxisId="idx" x={coEnd} stroke="#e67e22" strokeDasharray="2 3"
+                strokeOpacity={0.7}
+                label={{ value: '경기지표 여기까지', position: 'insideTopRight',
+                         fontSize: 10, fill: '#e67e22' }} />
+            )}
             {LINES.map((s) => (
               <Line key={s.key} yAxisId={s.axis} type="monotone" dataKey={s.key} name={s.name}
                 stroke={s.color} dot={false} strokeWidth={s.width}
-                hide={hidden.has(s.tk || s.key)} isAnimationActive={false} connectNulls />
+                hide={hidden.has(s.tk || s.key)} isAnimationActive={false}
+                connectNulls={s.axis === 'px'} />
             ))}
           </LineChart>
         </ResponsiveContainer>
@@ -1372,6 +1455,12 @@ function CycleChart({ months, CO, LE, KS }) {
             : <><b>실제 코스피 지수값</b> 그대로예요. 장기 상승 추세가 커서 순환 모양은 잘 안 보입니다 —
                 모양을 보시려면 <b>추세이탈</b>로 바꾸세요.</>}
         {' '}선 위에 커서를 올리면 그 달의 값이 나옵니다. 범례로 켜고 끌 수 있어요.
+      </p>
+      <p className="note">
+        📌 <b>주황선은 {coEnd}에서 끊깁니다</b>(세로 점선) — 경기지표 발표가 약 2개월 늦어서예요.
+        그 오른쪽은 <b>주가만 있는 구간</b>이라, 차트 맨 끝은 경기가 아니라 <b>주가의 현재</b>입니다.
+        예전엔 둘을 같은 달에서 잘라 그렸는데, 그러면 맨 끝의 두 달 전 상태를 지금으로 오해하게
+        돼서 나눴습니다.
       </p>
       <p className="note">
         코스피가 동행지수를 약 <b>9개월 선행</b>합니다(상관 +0.40) — 주가가 실물경기의 선행지표이지

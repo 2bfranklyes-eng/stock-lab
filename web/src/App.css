@@ -201,6 +201,10 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .cyc-qlabel { font-size: 17px; font-weight: 800; }
 .cyc-qhint { font-size: 12px; color: #64748b; }
 .cyc-qstat { font-size: 12px; color: #475569; line-height: 1.7; }
+/* 두 번째 줄(오늘의 주가 위치) — 경기 판정과 시점이 달라 구분선을 둔다 */
+.cyc-today { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); }
+.cyc-today .cyc-quad { border-left-color: #64748b; }
+.cyc-val-px { color: #64748b; }
 
 /* ── 자산배분 탭 ── */
 .al-regime { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
