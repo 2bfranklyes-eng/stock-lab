@@ -254,64 +254,148 @@ def run_ecos():
 # pykrx는 임포트 시점에 KRX 로그인을 시도하므로 지연 임포트한다(holders.py와 같은 이유).
 # KRX_ID/KRX_PW가 없으면 조용히 건너뛴다 — refresh_kr.yml(오후 크론)엔 그 시크릿이 없고,
 # 없다고 해서 나머지 지표 수집까지 멈추면 안 된다.
+# 코스피만이 아니라 코스닥까지 받는 이유 — '외국인'은 하나의 집단이 아니다. 실측하니 코스피
+# 외국인은 순매수 자기상관 +0.478에 기관과 -0.261로 반대편인데, 코스닥 외국인은 +0.008 / -0.058로
+# 성격이 딴판이었다. 한 몸이면 나올 수 없는 차이라, 두 시장을 나눠 둬야 '외국인'을 뭉뚱그리지 않는다.
+# 공매도를 따로 받는 이유 — '선물·공매도로 시세를 조종한다'는 통념을 사건 수 확보된 상태로
+# 검증하려면 현물 순매수와 별개 채널로 있어야 한다. 거래대금(tval)은 공매도·순매수를 규모로
+# 정규화할 분모다(대금 수준끼리 비교하면 거래가 활발한 시기가 전부 커 보인다).
 KRX_ID = os.environ.get("KRX_ID", "").strip()
 KRX_PW = os.environ.get("KRX_PW", "").strip()
 KR_INVESTOR_START = "20150101"    # yfinance·ECOS 수집 시작과 정렬
-KR_INVESTOR = {                   # code → (pykrx 컬럼명, 메타 name)
-    "kr_foreign": ("외국인합계", "코스피 외국인 순매수(억원)"),
-    "kr_inst":    ("기관합계",   "코스피 기관 순매수(억원)"),
-    "kr_indiv":   ("개인",       "코스피 개인 순매수(억원)"),
+KR_SHORT_START = "20160101"       # 공매도 투자자별은 2016-12-29부터 존재(그 전은 빈 응답)
+KR_MARKETS = {"KOSPI": ("kr", "코스피"), "KOSDAQ": ("kq", "코스닥")}
+KR_INV_COLS = {                   # 코드 접미사 → (pykrx 컬럼명, 메타 name 조각)
+    "foreign": ("외국인합계", "외국인"),
+    "inst":    ("기관합계",   "기관"),
+    "indiv":   ("개인",       "개인"),
 }
 
 
+def _last_dt(code):
+    r = sb.table("indicator_raw").select("dt").eq("market", "KR").eq("code", code) \
+          .order("dt", desc=True).limit(1).execute().data
+    return date.fromisoformat(r[0]["dt"]) if r else None
+
+
+def _meta(rows):
+    sb.table("indicator_meta").upsert(rows, on_conflict="code").execute()
+
+
 def run_kr_investor():
-    """코스피 투자자별 일별 순매수 대금을 indicator_raw(market=KR)에 적재. 단위: 억원.
+    """코스피·코스닥 투자자별 일별 순매수 + 전체 거래대금 → indicator_raw(market=KR). 단위: 억원.
 
     증분 수집 — 이미 있는 마지막 날짜 다음부터 오늘까지만. 처음이면 2015-01-01부터 백필.
     (전 구간이 몇 콜이면 끝나지만, 매일 11년치를 다시 upsert할 이유는 없다.)"""
     if not (KRX_ID and KRX_PW):
         print("[KR] KRX_ID/KRX_PW 없음 — 투자자별 순매수 수집 건너뜀")
         return
-    sb.table("indicator_meta").upsert(          # FK 충족: 신규 코드 메타 먼저 등록
-        [{"code": code, "name": name, "market": "KR", "category": "수급",
-          "role": "flow", "source": "pykrx:get_market_trading_value_by_date/KOSPI"}
-         for code, (_col, name) in KR_INVESTOR.items()], on_conflict="code").execute()
+    _meta([{"code": f"{pfx}_{suf}", "name": f"{mk} {nm} 순매수(억원)", "market": "KR",
+            "category": "수급", "role": "flow",
+            "source": f"pykrx:get_market_trading_value_by_date/{market}"}
+           for market, (pfx, mk) in KR_MARKETS.items()
+           for suf, (_col, nm) in KR_INV_COLS.items()]
+          + [{"code": f"{pfx}_tval", "name": f"{mk} 전체 거래대금(억원)", "market": "KR",
+              "category": "수급", "role": "turnover",
+              "source": f"pykrx:get_market_trading_value_by_date/{market}?on=매수"}
+             for market, (pfx, mk) in KR_MARKETS.items()])
 
-    r = sb.table("indicator_raw").select("dt").eq("market", "KR").eq("code", "kr_foreign") \
-          .order("dt", desc=True).limit(1).execute().data
-    start = ((date.fromisoformat(r[0]["dt"]) + timedelta(days=1)).strftime("%Y%m%d")
-             if r else KR_INVESTOR_START)
     end = date.today().strftime("%Y%m%d")
-    if start > end:
-        print(f"[KR] 투자자별 순매수: 최신 상태({r[0]['dt']}) — 건너뜀")
-        return
-
-    try:
-        from pykrx import stock                 # 임포트 = KRX 로그인 시도라 여기서
-        df = stock.get_market_trading_value_by_date(start, end, "KOSPI")
-    except Exception as e:
-        print(f"[KR] 투자자별 순매수 실패 — {e}")
-        sb.table("ingest_log").insert(
-            {"source": "krx_investor", "market": "KR", "rows": 0, "status": "error"}).execute()
-        return
-    if df is None or df.empty:
-        print(f"[KR] 투자자별 순매수: {start}~{end} 응답 없음(휴장 구간일 수 있음)")
-        return
-
     total = 0
-    for code, (col, _name) in KR_INVESTOR.items():
-        if col not in df.columns:
-            print(f"  [KR] {code}: pykrx 응답에 '{col}' 열 없음 — 건너뜀")
+    for market, (pfx, mk) in KR_MARKETS.items():
+        # 증분 기준은 '이 시장에서 쓰는 코드들 중 가장 뒤처진 것'이다. 대표 코드 하나로 잡으면
+        # 나중에 코드를 추가했을 때(tval이 그랬다) 신규 코드만 영원히 빈 채로 남는다.
+        lds = [_last_dt(f"{pfx}_{s}") for s in list(KR_INV_COLS) + ["tval"]]
+        ld = None if any(x is None for x in lds) else min(lds)
+        start = (ld + timedelta(days=1)).strftime("%Y%m%d") if ld else KR_INVESTOR_START
+        if start > end:
+            print(f"[KR] {mk} 투자자별: 최신 상태({ld}) — 건너뜀")
             continue
-        rows = [{"market": "KR", "dt": d.strftime("%Y-%m-%d"), "code": code,
-                 "value": float(v) / 1e8}          # 원 → 억원
-                for d, v in df[col].items() if pd.notna(v)]
-        upsert(rows)
-        total += len(rows)
-        print(f"  [KR] {code}: {len(rows)} rows")
+        try:
+            from pykrx import stock             # 임포트 = KRX 로그인 시도라 여기서
+            net = stock.get_market_trading_value_by_date(start, end, market)
+            buy = stock.get_market_trading_value_by_date(start, end, market, on="매수")
+        except Exception as e:
+            print(f"[KR] {mk} 투자자별 실패 — {e}")
+            sb.table("ingest_log").insert(
+                {"source": "krx_investor", "market": "KR", "rows": 0, "status": "error"}).execute()
+            continue
+        if net is None or net.empty:
+            print(f"[KR] {mk} 투자자별: {start}~{end} 응답 없음(휴장 구간일 수 있음)")
+            continue
+        for suf, (col, _nm) in KR_INV_COLS.items():
+            if col not in net.columns:
+                print(f"  [KR] {pfx}_{suf}: 응답에 '{col}' 열 없음 — 건너뜀")
+                continue
+            rows = [{"market": "KR", "dt": d.strftime("%Y-%m-%d"), "code": f"{pfx}_{suf}",
+                     "value": float(v) / 1e8}      # 원 → 억원
+                    for d, v in net[col].items() if pd.notna(v)]
+            upsert(rows)
+            total += len(rows)
+            print(f"  [KR] {pfx}_{suf}: {len(rows)} rows")
+        # 매수 합계의 '전체' = 그날 시장 거래대금. 공매도·순매수 정규화의 분모.
+        if buy is not None and not buy.empty and "전체" in buy.columns:
+            rows = [{"market": "KR", "dt": d.strftime("%Y-%m-%d"), "code": f"{pfx}_tval",
+                     "value": float(v) / 1e8}
+                    for d, v in buy["전체"].items() if pd.notna(v)]
+            upsert(rows)
+            total += len(rows)
+            print(f"  [KR] {pfx}_tval: {len(rows)} rows")
     sb.table("ingest_log").insert(
         {"source": "krx_investor", "market": "KR", "rows": total, "status": "ok"}).execute()
-    print(f"[KR] 투자자별 순매수 완료: {start}~{end} 총 {total} rows")
+    print(f"[KR] 투자자별 순매수 완료: 총 {total} rows")
+
+
+def run_kr_shorting():
+    """코스피·코스닥 투자자별 일별 공매도 대금 → indicator_raw. 단위: 억원(항상 양수).
+
+    이 엔드포인트는 긴 구간을 한 번에 못 준다(10년 요청 시 빈 응답) — 연도별로 나눠 받는다."""
+    if not (KRX_ID and KRX_PW):
+        print("[KR] KRX_ID/KRX_PW 없음 — 공매도 수집 건너뜀")
+        return
+    _meta([{"code": f"{pfx}_short_{suf}", "name": f"{mk} {nm} 공매도 대금(억원)", "market": "KR",
+            "category": "수급", "role": "short",
+            "source": f"pykrx:get_shorting_investor_value_by_date/{market}"}
+           for market, (pfx, mk) in KR_MARKETS.items()
+           # 공매도 응답의 열 이름은 순매수 쪽과 달리 '기관/개인/외국인'(합계 표기 없음)
+           for suf, nm in (("foreign", "외국인"), ("inst", "기관"), ("indiv", "개인"))])
+    SHORT_COLS = {"foreign": "외국인", "inst": "기관", "indiv": "개인"}
+
+    today = date.today()
+    total = 0
+    for market, (pfx, mk) in KR_MARKETS.items():
+        ld = _last_dt(f"{pfx}_short_foreign")
+        start = (ld + timedelta(days=1)) if ld else date.fromisoformat(
+            f"{KR_SHORT_START[:4]}-{KR_SHORT_START[4:6]}-{KR_SHORT_START[6:]}")
+        if start > today:
+            print(f"[KR] {mk} 공매도: 최신 상태({ld}) — 건너뜀")
+            continue
+        acc = {suf: [] for suf in SHORT_COLS}
+        from pykrx import stock
+        for y in range(start.year, today.year + 1):
+            a = max(start, date(y, 1, 1)).strftime("%Y%m%d")
+            b = min(today, date(y, 12, 31)).strftime("%Y%m%d")
+            try:
+                df = stock.get_shorting_investor_value_by_date(a, b, market)
+            except Exception as e:
+                print(f"  [KR] {mk} 공매도 {y}: 실패 — {e}")
+                continue
+            if df is None or df.empty:
+                continue
+            for suf, col in SHORT_COLS.items():
+                if col in df.columns:
+                    acc[suf] += [{"market": "KR", "dt": d.strftime("%Y-%m-%d"),
+                                  "code": f"{pfx}_short_{suf}", "value": float(v) / 1e8}
+                                 for d, v in df[col].items() if pd.notna(v)]
+            time.sleep(0.2)                     # KRX 호출 간격 — 연도 루프라 콜이 여러 번
+        for suf, rows in acc.items():
+            if rows:
+                upsert(rows)
+                total += len(rows)
+                print(f"  [KR] {pfx}_short_{suf}: {len(rows)} rows")
+    sb.table("ingest_log").insert(
+        {"source": "krx_short", "market": "KR", "rows": total, "status": "ok"}).execute()
+    print(f"[KR] 공매도 완료: 총 {total} rows")
 
 
 # ── FRED(세인트루이스 연준) 일별 — 실질금리 (yfinance엔 없음) ──
@@ -367,4 +451,5 @@ if __name__ == "__main__":
         run_fred()
     if "KR" in markets:                            # 한국 국내 금리(ECOS)는 yfinance 뒤에 별도 수집
         run_ecos()
-        run_kr_investor()                          # 코스피 투자자별 순매수(KRX 로그인 필요, 없으면 스킵)
+        run_kr_investor()                          # 코스피·코스닥 투자자별 순매수 + 거래대금
+        run_kr_shorting()                          # 코스피·코스닥 투자자별 공매도 (둘 다 KRX 로그인 필요)
