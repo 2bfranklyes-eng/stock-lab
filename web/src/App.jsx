@@ -569,7 +569,10 @@ function Gauge({ value, band, lowLabel, highLabel, desc }) {
 
 // 커스텀 툴팁: 각 성분의 점수(0~100)와 함께 '실제 수치'(config.raw 정의 시)를 보여줌.
 //   예) 금리  4.45%  95 — 굵은 값=실제 국고채10년, 옅은 값=점수. (사용자 혼동 "금리:95" 해소)
-function ChartTooltip({ active, payload, label, config, market, mainKey, valueFmt = null }) {
+// scoreWin — 0~100 점수가 '무엇에 대한 백분위'인지. 이게 없으면 "구리 $2.89인데 94,
+// $6.69인데도 비슷"처럼 절대 수준으로 오해한다(실사용에서 나온 지적). 점수는 절대값이 아니라
+// 그 창 안에서의 위치라, 창 길이를 툴팁에 같이 써야 숫자가 해석된다. 창은 지표마다 다르다.
+function ChartTooltip({ active, payload, label, config, market, mainKey, valueFmt = null, scoreWin = null }) {
   if (!active || !payload || !payload.length) return null
   const point = payload[0].payload
   const order = config.map((c) => c.key)
@@ -596,7 +599,11 @@ function ChartTooltip({ active, payload, label, config, market, mainKey, valueFm
           </div>
         )
       })}
-      {anyRaw && <div className="tip-foot">굵은 값 = 실제 수치 · 옅은 값 = 점수(0~100)</div>}
+      {anyRaw && (
+        <div className="tip-foot">
+          굵은 값 = 실제 수치 · 옅은 값 = {scoreWin ? `${scoreWin} 안에서의 위치` : '점수'}(0~100)
+        </div>
+      )}
     </div>
   )
 }
@@ -673,7 +680,7 @@ async function loadTrendPrice(market) {
 
 // 공용 추이 차트: 종합선 + 성분선 + 주가 겹치기 + 구간선택 + 이벤트선 + 커스텀 범례.
 //   config[0] = 종합(범례 맨 앞, z축 맨 위). mainKey = 종합 dataKey.
-function TrendChart({ series, config, market, title, refLines, note, mainKey, ranges = RANGES, defaultRange = 756, yDomain = [0, 100], valueFmt = null }) {
+function TrendChart({ series, config, market, title, refLines, note, mainKey, ranges = RANGES, defaultRange = 756, yDomain = [0, 100], valueFmt = null, scoreWin = null }) {
   const [range, setRange] = useState(defaultRange)   // 기본 3년(또는 지정값)
   const [hidden, setHidden] = useState(() => new Set())
   const [evtTip, setEvtTip] = useState(null)         // 이벤트 이모지에 커서 올렸을 때
@@ -765,7 +772,8 @@ function TrendChart({ series, config, market, title, refLines, note, mainKey, ra
               tickFormatter={(v) => (isMom ? `${Math.round(v)}%` : Math.round(v).toLocaleString())} />
           )}
           <Tooltip content={(props) => <ChartTooltip {...props} config={tipConfig} market={market}
-            mainKey={isBoth ? 'z_' + mainKey : mainKey} valueFmt={isBoth ? null : valueFmt} />}
+            mainKey={isBoth ? 'z_' + mainKey : mainKey} valueFmt={isBoth ? null : valueFmt}
+            scoreWin={isBoth ? null : scoreWin} />}
             wrapperStyle={{ outline: 'none' }} />
           {!isBoth && refLines.map((r) => (
             <ReferenceLine key={r.y} yAxisId="idx" y={r.y} stroke={r.color} strokeDasharray="4 4" />
@@ -805,7 +813,19 @@ function TrendChart({ series, config, market, title, refLines, note, mainKey, ra
           </button>
         )}
       </div>
-      {!isBoth && <p className="note">{note}</p>}
+      {!isBoth && (
+        <p className="note">
+          {note}
+          {/* 점수를 절대 수준으로 오해하는 걸 막는다 — 툴팁은 커서를 올려야 보이므로 여기에도 쓴다.
+              예: 구리가 $2.89(2020)일 때도 94, $6.69(2026)일 때도 100. 값이 두 배 넘게 달라도
+              '각자의 그 시점 1년 범위에서 거의 꼭대기'라 둘 다 높다. */}
+          {scoreWin && (
+            <> {' '}<b>0~100은 절대 수준이 아니라 {scoreWin} 안에서의 위치</b>입니다 — 같은 점수라도
+              시기가 다르면 실제 수치는 크게 다를 수 있어요(예: 구리가 $2.89일 때도 $6.69일 때도
+              90점대. 각자 그 시점 {scoreWin} 범위의 꼭대기라서요).</>
+          )}
+        </p>
+      )}
       {showPx && (
         <p className="note">
           {isBoth
@@ -836,7 +856,7 @@ function MarketBody({ latest, series, stats, market }) {
       <Gauge value={latest.s_score} band={b} lowLabel="공포" highLabel="탐욕" desc={BAND_DESC[b.name]} />
       <TrendChart
         series={series} config={SERIES} market={market} mainKey="s_score"
-        title="S(t) 심리점수 추이"
+        title="S(t) 심리점수 추이" scoreWin="최근 1년"   /* sentiment.py pct_rank win=252 */
         refLines={[{ y: 80, color: '#c0392b' }, { y: 20, color: '#2471a3' }]}
         note={<>굵은 <b style={{ color: '#d97706' }}>주황</b>이 종합 심리점수, 얇은 4선은 그걸 이루는 성분(각 0~100, 높을수록 탐욕 쪽). <b>범례를 누르면</b> 선을 켜고 끌 수 있어요.</>}
       />
@@ -925,7 +945,7 @@ function LiquidityBody({ latest, series, stats, market }) {
       <RawFigures latest={latest} market={market} />
       <TrendChart
         series={series} config={L_SERIES} market={market} mainKey="l_score"
-        title="L(t) 유동성 추이"
+        title="L(t) 유동성 추이" scoreWin="최근 3년"     /* liquidity.py WIN=756 */
         refLines={[{ y: 80, color: '#1e8449' }, { y: 20, color: '#c0392b' }]}
         note={<>굵은 <b style={{ color: '#d97706' }}>주황</b>이 종합 유동성, 얇은 4선은 성분(각 0~100, 높을수록 완화). <b>범례를 누르면</b> 선을 켜고 끌 수 있어요.</>}
       />
@@ -1013,7 +1033,7 @@ function InflationBody({ latest, series, stats, market }) {
       <InflationFigures latest={latest} market={market} />
       <TrendChart
         series={series} config={I_SERIES} market={market} mainKey="i_score"
-        title="I(t) 물가 추이"
+        title="I(t) 물가 추이" scoreWin="최근 1년"       /* inflation.py pct_rank win=252 */
         refLines={[{ y: 80, color: '#c0392b' }, { y: 20, color: '#2471a3' }]}
         note={<>굵은 <b style={{ color: '#d97706' }}>주황</b>이 종합 물가, 얇은 4선은 성분(각 0~100, 높을수록 물가↑). <b>범례를 누르면</b> 선을 켜고 끌 수 있어요.</>}
       />
@@ -1213,6 +1233,8 @@ function FuelBody({ latest, series, stats, market }) {
         <TrendChart
           series={series} config={fSeries(market)} market={market} mainKey="f_score"
           title="F(t) 실탄 추이"
+          /* fuel.py — 미국은 주간 104주(2년), 한국은 월간 60개월(5년) */
+          scoreWin={market === 'US' ? '최근 2년' : '최근 5년'}
           ranges={F_RANGES_KR} defaultRange={Infinity}
           refLines={[{ y: 80, color: '#1e8449' }, { y: 20, color: '#c0392b' }]}
           note={<>굵은 <b style={{ color: '#d97706' }}>주황</b>이 종합 실탄, 얇은 3선은 성분(각 0~100, 높을수록 유입). <b>한국은 월간·단위가 달라(%·원) 절대금액 합산이 안 돼</b> 백분위로 봅니다.</>}
