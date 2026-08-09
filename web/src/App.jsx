@@ -1182,14 +1182,6 @@ function CycleBody({ d }) {
   const nowAll = all?.by[q]
   const nowRec = recent?.by[q]
   const pc = (v) => `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%`
-  // 차트: 최근 15년. 순환변동치와 코스피를 각자 범위로 정규화해 겹친다(단위가 달라 절대 비교 불가).
-  const view = months.slice(-180)
-  const cvs = view.map((m) => CO[m]), kvs = view.map((m) => KS[m])
-  const cLo = Math.min(...cvs), cHi = Math.max(...cvs)
-  const kLo = Math.min(...kvs), kHi = Math.max(...kvs)
-  const X = (i) => (i / (view.length - 1)) * 100
-  const Yc = (v) => 100 - ((v - cLo) / (cHi - cLo || 1)) * 96 - 2
-  const Yk = (v) => 100 - ((v - kLo) / (kHi - kLo || 1)) * 96 - 2
 
   return (
     <>
@@ -1267,27 +1259,126 @@ function CycleBody({ d }) {
         </p>
       </section>
 
-      <section className="card">
-        <h2>📈 동행지수 순환변동치 vs 코스피 (최근 15년)</h2>
-        <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="cyc-chart">
-          <line x1="0" x2="100" y1={Yc(100)} y2={Yc(100)} className="cyc-mid" />
-          <polyline points={view.map((m, i) => `${X(i)},${Yk(KS[m])}`).join(' ')} className="cyc-ks" />
-          <polyline points={view.map((m, i) => `${X(i)},${Yc(CO[m])}`).join(' ')} className="cyc-co" />
-        </svg>
-        <div className="vp-chart-cap">
-          <span className="hp-legend">
-            <span><i style={{ background: '#e67e22' }} />동행 순환변동치 (기준선 100)</span>
-            <span><i style={{ background: '#64748b' }} />코스피</span>
-          </span>
-          <span>{view[0]} ~ {view[view.length - 1]}</span>
-        </div>
-        <p className="note">
-          두 선은 <b>단위가 달라 각자 범위로 정규화</b>했습니다 — 높낮이를 직접 비교하지 마시고
-          <b>모양과 시차</b>만 보세요. 코스피가 동행지수를 약 <b>9개월 선행</b>합니다(상관 +0.40).
-          주가가 실물경기의 선행지표이지 그 반대가 아닙니다.
-        </p>
-      </section>
+      <CycleChart months={months} CO={CO} LE={LE} KS={KS} />
     </>
+  )
+}
+
+// 월 지표 전용 구간 — 다른 탭의 RANGES는 거래일 기준이라 여기선 안 맞는다.
+const CYC_RANGES = [
+  { label: '10년', n: 120 }, { label: '15년', n: 180 },
+  { label: '20년', n: 240 }, { label: '전체', n: Infinity },
+]
+// 종합 탭과 같은 세 가지 주가 표시 방식. 순환변동치(94~106)와 코스피(수백~수천)는 단위가
+// 달라 한 축에 못 올리므로 축을 나누고, 기본은 '추세이탈'로 둔다 —
+// 순환변동치가 이미 추세를 걷어낸 값이라, 주가도 같은 처리를 해야 모양이 비교된다.
+const CYC_PMODES = [
+  { key: 'mom', label: '추세이탈' },
+  { key: 'base', label: '지수화(시작=100)' },
+  { key: 'raw', label: '실제 주가' },
+]
+
+function CycleChart({ months, CO, LE, KS }) {
+  const [range, setRange] = useState(180)
+  const [pmode, setPmode] = useState('mom')
+  const [hidden, setHidden] = useState(() => new Set(['lead']))   // 선행지수는 기본 꺼둠(순환논리)
+  const toggle = (k) => setHidden((h) => { const n = new Set(h); if (n.has(k)) n.delete(k); else n.add(k); return n })
+  const isMom = pmode === 'mom'
+  const isBase = pmode === 'base'
+
+  // 추세이탈 = 12개월 이동평균 대비 %. 종합 탭은 일별이라 125일을 쓰는데, 여기는 월별이라
+  // 같은 '약 1년' 창을 12개월로 잡는다. 초반 11개월은 창이 안 차 null.
+  const data = useMemo(() => months.map((m, i) => {
+    let sum = 0, n = 0
+    for (let j = Math.max(0, i - 11); j <= i; j++) { if (KS[months[j]] != null) { sum += KS[months[j]]; n++ } }
+    return { dt: m, coin: CO[m], lead: LE[m] ?? null, kospi: KS[m],
+             mom_kospi: n >= 6 ? (KS[m] / (sum / n) - 1) * 100 : null }
+  }), [months, CO, LE, KS])
+
+  const shown = range === Infinity ? data : data.slice(-range)
+  const plotted = useMemo(() => {
+    if (!isBase) return shown
+    const first = shown.find((r) => r.kospi != null)?.kospi
+    return shown.map((r) => ({ ...r, base_kospi: first ? (r.kospi / first) * 100 : null }))
+  }, [shown, isBase])
+
+  const pxKey = isBase ? 'base_kospi' : isMom ? 'mom_kospi' : 'kospi'
+  const LINES = [
+    { key: 'coin', name: '동행 순환변동치', color: '#e67e22', width: 2.4, axis: 'idx' },
+    { key: 'lead', name: '선행 순환변동치(참고)', color: '#c9a227', width: 1.4, axis: 'idx' },
+    { key: pxKey, name: '코스피', color: '#64748b', width: 1.6, axis: 'px', tk: 'kospi' },
+  ]
+  const fmt = (v, name) => {
+    if (v == null) return ['—', name]
+    if (name === '코스피') {
+      return [isMom ? `${v > 0 ? '+' : ''}${v.toFixed(1)}%`
+        : isBase ? v.toFixed(1) : Math.round(v).toLocaleString(), name]
+    }
+    return [v.toFixed(1), name]
+  }
+
+  return (
+    <section className="card">
+      <h2>📈 동행지수 순환변동치 vs 코스피</h2>
+      <div className="seg">
+        {CYC_RANGES.map((r) => (
+          <button key={r.label} className={range === r.n ? 'on' : ''} onClick={() => setRange(r.n)}>{r.label}</button>
+        ))}
+      </div>
+      <div className="seg">
+        {CYC_PMODES.map((m) => (
+          <button key={m.key} className={pmode === m.key ? 'on' : ''} onClick={() => setPmode(m.key)}>{m.label}</button>
+        ))}
+      </div>
+      <div className="chart-wrap">
+        <ResponsiveContainer width="100%" height={300}>
+          <LineChart data={plotted} margin={{ top: 16, right: 4, left: -20, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
+            <XAxis dataKey="dt" tick={{ fontSize: 10 }} minTickGap={44} />
+            <YAxis yAxisId="idx" domain={['auto', 'auto']} width={42} tick={{ fontSize: 10 }}
+              tickFormatter={(v) => v.toFixed(0)} />
+            <YAxis yAxisId="px" orientation="right" domain={['auto', 'auto']} width={48} tick={{ fontSize: 9 }}
+              tickFormatter={(v) => (isMom ? `${Math.round(v)}%` : Math.round(v).toLocaleString())} />
+            <Tooltip formatter={fmt} labelFormatter={(l) => `${l.slice(0, 4)}년 ${l.slice(5, 7)}월`}
+              wrapperStyle={{ outline: 'none' }} />
+            {/* 순환변동치 100 = 경기 중립. 이 선 위/아래가 곧 정점권/바닥권의 눈금이다 */}
+            <ReferenceLine yAxisId="idx" y={100} stroke="#94a3b8" strokeDasharray="4 4" />
+            {isMom && <ReferenceLine yAxisId="px" y={0} stroke="#cbd5e1" strokeDasharray="3 3" />}
+            {isBase && <ReferenceLine yAxisId="px" y={100} stroke="#cbd5e1" strokeDasharray="3 3" />}
+            {LINES.map((s) => (
+              <Line key={s.key} yAxisId={s.axis} type="monotone" dataKey={s.key} name={s.name}
+                stroke={s.color} dot={false} strokeWidth={s.width}
+                hide={hidden.has(s.tk || s.key)} isAnimationActive={false} connectNulls />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      <div className="chart-legend">
+        {LINES.map((s) => (
+          <button key={s.key} className={hidden.has(s.tk || s.key) ? 'off' : ''}
+            onClick={() => toggle(s.tk || s.key)}>
+            <span className="swatch" style={{ background: s.color, height: s.width >= 2 ? 4 : 2 }} />
+            {s.name}
+          </button>
+        ))}
+      </div>
+      <p className="note">
+        <b>왼축 = 순환변동치</b>(100이 경기 중립, 점선), <b>오른축 = 코스피</b>.{' '}
+        {isMom
+          ? <>주가 선 = <b>추세이탈</b>(12개월 평균 대비 %). 순환변동치가 이미 추세를 걷어낸 값이라,
+              주가도 같은 처리를 해야 <b>둘의 모양과 시차가 비교</b>됩니다 — 이 모드가 기본인 이유예요.</>
+          : isBase
+            ? <>주가 선 = <b>보이는 구간 첫 달=100</b>으로 지수화. 구간 안의 상대 성과만 보입니다.</>
+            : <><b>실제 코스피 지수값</b> 그대로예요. 장기 상승 추세가 커서 순환 모양은 잘 안 보입니다 —
+                모양을 보시려면 <b>추세이탈</b>로 바꾸세요.</>}
+        {' '}선 위에 커서를 올리면 그 달의 값이 나옵니다. 범례로 켜고 끌 수 있어요.
+      </p>
+      <p className="note">
+        코스피가 동행지수를 약 <b>9개월 선행</b>합니다(상관 +0.40) — 주가가 실물경기의 선행지표이지
+        그 반대가 아닙니다. <b>선행 순환변동치는 기본으로 꺼 뒀습니다</b>(구성지표에 코스피가 들어
+        있어 순환논리) — 참고로 보시려면 범례에서 켜세요.
+      </p>
+    </section>
   )
 }
 
