@@ -1699,6 +1699,20 @@ function ProfileBody({ rows, series, holder }) {
   // 주체별 겹침층 — 모델과 단위가 달라(전체 손바뀜 추정 vs 순매수 실측) 각자 최대값 기준으로
   // 정규화한다. 두 막대의 길이를 서로 비교하는 건 무의미하다 — 위치(어느 가격대인가)만 비교 대상.
   const hb = useMemo(() => rebinHolder(holder, rows), [holder, rows])
+  // 주체별 기간 순매수(net_qty) — 막대가 비어 보이는 이유를 차트 옆에서 바로 알려주기 위함.
+  // 순매도 주체는 창 안에서 포지션이 0으로 리셋돼 최근 재매수분만 막대로 남는데, 그걸 모르면
+  // '외국인 물량 없음 = 매물 부담 없음'으로 정반대로 읽힌다(실사용에서 나온 오독).
+  // 카드 섹션에도 같은 값이 있지만 스크롤 아래라, 오독이 일어나는 차트 옆에 다시 붙인다.
+  const hnet = useMemo(() => {
+    if (!holder?.length) return null
+    const out = {}
+    for (const t of HP_TYPES) {
+      const r = holder.find((x) => x.inv === t.key)
+      if (r) out[t.key] = { pos: r.pos_qty || 0, net: r.net_qty ?? null }
+    }
+    return out
+  }, [holder])
+  const soldTypes = HP_TYPES.filter((t) => (hnet?.[t.key]?.net ?? 0) < 0)
   const px = rows[0].px
   const dt = rows[0].dt
   const daily = rows[0].daily_qty          // 최근 20일 평균 거래량(주)
@@ -1836,7 +1850,16 @@ function ProfileBody({ rows, series, holder }) {
               {hb && (
                 <span className="hp-legend">
                   <span className="hp-legend-cap">굵은 옅은 막대=모델(전체) · 가는 막대=주체별 실측:</span>
-                  {HP_TYPES.map((t) => <span key={t.key}><i style={{ background: t.color }} />{t.label}</span>)}
+                  {HP_TYPES.map((t) => {
+                    const net = hnet?.[t.key]?.net
+                    return (
+                      <span key={t.key}>
+                        <i style={{ background: t.color }} />{t.label}
+                        {/* 순매도 주체는 막대가 거의 안 남는다 — 범례에서 바로 구분되게 표시 */}
+                        {net < 0 && <b className="hp-sold">▼{qtyFmt(-net)} 순매도</b>}
+                      </span>
+                    )
+                  })}
                 </span>
               )}
               {lastRef != null && (
@@ -1862,6 +1885,25 @@ function ProfileBody({ rows, series, holder }) {
               <em key={t.key} style={{ color: t.color }}>{t.label} {qtyFmt(hb.bins[hover].by[t.key])}</em>
             ))}
           </div>
+        )}
+        {hb && soldTypes.length > 0 && (
+          <p className="note hp-warn">
+            ⚠️ <b>막대가 비어 있다고 매물이 없는 게 아니에요.</b>{' '}
+            {soldTypes.map((t, i) => (
+              <span key={t.key}>
+                {i > 0 && ' · '}
+                <b style={{ color: t.color }}>{t.label} {qtyFmt(-hnet[t.key].net)} 순매도</b>
+              </span>
+            ))}
+            {' '}(이 기간). 판 게 산 것보다 많은 주체는 창 안에서 <b>포지션이 0으로 리셋</b>되고
+            그 뒤 다시 산 물량만 막대로 남습니다
+            {soldTypes.some((t) => hnet[t.key].pos > 0) && (
+              <>{' '}— 지금 보이는 건 {soldTypes.filter((t) => hnet[t.key].pos > 0)
+                .map((t) => `${t.label} ${qtyFmt(hnet[t.key].pos)}`).join(' · ')} 뿐이에요</>
+            )}
+            . <b>실제 보유는 그보다 훨씬 큽니다</b> — 이 막대로 "매물 부담이 없다"고 읽으면
+            정반대 결론이 됩니다.
+          </p>
         )}
         <p className="note">
           <b>주가선이 매물대 위에 겹쳐 있습니다</b> — 같은 가격 축이라, 선이 오래 머문 높이일수록

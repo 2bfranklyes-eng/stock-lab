@@ -186,6 +186,10 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .hp-legend { display: flex; gap: 10px; flex-wrap: wrap; margin-right: auto; }
 .hp-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 3px; }
 .hp-legend-cap { color: #64748b; }
+/* 순매도 주체 표시 — 막대가 짧은 게 '물량 없음'이 아니라 '다 팔아서'임을 범례에서 바로 알린다 */
+.hp-sold { color: #2471a3; font-weight: 700; margin-left: 3px; }
+.hp-warn { border-left: 3px solid #e67e22; background: rgba(230, 126, 34, 0.06);
+  padding: 7px 10px; border-radius: 0 6px 6px 0; color: #475569; }
 
 /* ── 자산배분 탭 ── */
 .al-regime { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
@@ -276,6 +280,8 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   .nav-tabs button.on { background: #d97706; border-color: #d97706; }
   .card h2 { color: #e2e8f0; }
   .lead, .col-date, .gauge-note, .note, .cap, .glossary dd, .setup p { color: #94a3b8; }
+  .hp-sold { color: #60a5fa; }
+  .hp-warn { color: #cbd5e1; background: rgba(230, 126, 34, 0.12); }
   .method li { color: #cbd5e1; }
   .seg button { color: #94a3b8; }
   .seg button.on { color: #fff; }
