@@ -282,6 +282,7 @@ const TAB_GROUPS = [
     { key: 'vp', label: '매물대', emoji: '⛰️' },
     { key: 'ai', label: 'AI 사이클', emoji: '🤖' },
     { key: 'scr', label: '종목', emoji: '🔎' },
+    { key: 'guru', label: '구루', emoji: '🏆' },   // 종목 바로 옆 — 같은 재무 데이터를 다른 잣대로 본다
   ] },
   { key: 'mine', label: '내 투자', emoji: '🧺', tabs: [
     { key: 'pf', label: '포트폴리오', emoji: '🧺' },
@@ -304,6 +305,7 @@ function renderSection(key) {
     case 'vp': return <ProfileSection />
     case 'ai': return <AISection />
     case 'scr': return <ScreenerSection />
+    case 'guru': return <GuruSection />
     case 'pf': return <PortfolioSection />
     default: return null
   }
@@ -4109,13 +4111,13 @@ function FiscalNote({ meta, codes = null }) {
   )
 }
 
-function StockGate({ state, children }) {
+function StockGate({ state, children, need = 'stock_meta 테이블 생성 + screener.py 실행 필요' }) {
   if (state === 'loading') return <div className="col-msg">불러오는 중…</div>
   if (state === 'error') return <div className="col-msg">데이터를 불러오지 못했어요</div>
   if (state === 'empty') {
     return (
       <div className="col-msg soon">🚧<br /><b>데이터 준비 중</b><br />
-        <span>stock_meta 테이블 생성 + screener.py 실행 필요</span></div>
+        <span>{need}</span></div>
     )
   }
   return children
@@ -4222,6 +4224,307 @@ function ScreenerSection() {
           </div>
           {rows.length > 120 && <p className="note">상위 120종목만 표시 중 — 필터나 검색으로 좁혀보세요.</p>}
           <p className="note owarn-inline">{STOCK_CAVEAT}</p>
+        </section>
+      </StockGate>
+    </>
+  )
+}
+
+// ── 구루 스크리너 ──
+// guru.py 가 계산해 guru_picks 에 넣어둔 결과를 읽어 보여주기만 한다(프론트에서 재계산하지 않는다).
+// ⚠️ 아래 rules 문구는 guru.py 의 GURUS[].rules 라벨과 글자까지 같아야 한다 — 화면과 계산이
+//    다른 말을 하면 어느 쪽이 맞는지 확인할 방법이 없다. 한쪽을 고치면 반드시 같이 고칠 것.
+const gpct = (v) => (v == null ? '—' : (v * 100).toFixed(0) + '%')
+const gsign = (v) => (v == null ? '—' : (v > 0 ? '+' : '') + (v * 100).toFixed(0) + '%')
+const gnum = (v, d = 1) => (v == null ? '—' : v.toFixed(d))
+// 시총은 통화를 갈라 적는다 — 4.5조와 $4.5B가 한 칸에 섞이면 크기 비교가 거짓말이 된다
+const gcap = (v, cur) => {
+  if (v == null) return '—'
+  if (cur !== 'USD') return won(v)
+  if (v >= 1e12) return '$' + (v / 1e12).toFixed(2) + 'T'
+  if (v >= 1e9) return '$' + (v / 1e9).toFixed(1) + 'B'
+  return '$' + Math.round(v / 1e6) + 'M'
+}
+const SECTOR_KO = {
+  Technology: '기술', Industrials: '산업재', Healthcare: '헬스케어',
+  'Financial Services': '금융', 'Consumer Cyclical': '경기소비재',
+  'Basic Materials': '소재', 'Consumer Defensive': '필수소비재',
+  'Communication Services': '커뮤니케이션', Energy: '에너지',
+  'Real Estate': '부동산', Utilities: '유틸리티',
+}
+const MK_KO = { US: '🇺🇸 미국', KOSPI: '🇰🇷 코스피', KOSDAQ: '🇰🇷 코스닥', KONEX: '🇰🇷 코넥스' }
+
+// 구루마다 표의 열이 다르다 — 같은 표를 5번 보여주면 "이 사람이 무엇을 보는가"가 사라진다.
+const GC = {
+  per: { name: 'PER', f: (p) => gnum(p.per) },
+  pbr: { name: 'PBR', f: (p) => gnum(p.pbr, 2) },
+  roe: { name: 'ROE', f: (p) => gpct(p.roe) },
+  roa: { name: 'ROA', f: (p) => gpct(p.roa) },
+  opm: { name: '영업이익률', f: (p) => gpct(p.op_margin) },
+  pm: { name: '순이익률', f: (p) => gpct(p.profit_margin) },
+  debt: { name: '부채/자본', f: (p) => (p.debt_to_equity == null ? '—' : p.debt_to_equity.toFixed(0) + '%') },
+  div: { name: '배당', f: (p) => (p.div_yield == null ? '—' : p.div_yield.toFixed(1) + '%') },
+  peg: { name: 'PEG', f: (p) => gnum(p.peg, 2) },
+  eg: { name: '이익성장', f: (p) => gsign(p.earn_growth) },
+  rg: { name: '매출성장', f: (p) => gsign(p.rev_growth) },
+  gnums: { name: 'PER×PBR', f: (p) => (p.per && p.pbr ? (p.per * p.pbr).toFixed(1) : '—') },
+  // 마법공식의 두 축. 계산식이 시장마다 달라(한국 DART 원본 · 미국 야후 근사) 값만 보여주고
+  // 무슨 자로 쟀는지는 아래 caveat 에 적는다. roic 이 있으면 한국(원본), 없으면 미국(ROA 근사).
+  roc: { name: '자본수익률', f: (p) => gpct(p.roic != null ? p.roic : p.roa) },
+  ey: { name: '이익수익률', f: (p) => (p.earn_yield == null ? '—' : (p.earn_yield * 100).toFixed(1) + '%') },
+  ev: { name: 'EV/EBITDA', f: (p) => gnum(p.ev_ebitda) },
+  mom: { name: '12개월', f: (p) => gsign(p.mom_12m) },
+  high: { name: '신고가대비', f: (p) => gpct(p.off_high) },
+}
+
+const GURUS = [
+  {
+    key: 'buffett', name: '워런 버핏', short: '버핏', emoji: '🏰', tagline: '훌륭한 기업을 적당한 가격에',
+    idea: '돈을 잘 벌고(높은 ROE·마진) 빚이 적으며, 가격이 터무니없지 않은 회사. 싼 것보다 좋은 것이 먼저다.',
+    rules: ['ROE 15% 이상', '영업이익률 10% 이상', '순이익률 8% 이상',
+      '부채/자본 100% 이하', 'PER 25배 이하 (흑자)', '충분한 규모'],
+    cols: ['roe', 'opm', 'pm', 'debt', 'per'],
+    scoreLabel: 'ROE÷PER', scoreFmt: (v) => v.toFixed(2),
+    scoreDesc: "수익성 대비 가격. 같은 ROE면 싼 쪽, 같은 PER이면 잘 버는 쪽이 위로 옵니다.",
+  },
+  {
+    key: 'graham', name: '벤저민 그레이엄', short: '그레이엄', emoji: '🛡️', tagline: '안전마진 — 가치보다 확실히 싸게',
+    idea: '『현명한 투자자』의 방어적 투자자 조건 중 계량 가능한 것들. 미래를 맞히려 하지 않고, 지금 장부 대비 싼 것만 삽니다.',
+    rules: ['PER 15배 이하', 'PBR 1.5배 이하', '그레이엄 수(PER×PBR) 22.5 이하',
+      '부채/자본 50% 이하', '배당 지급', '흑자 (ROE·순이익률 > 0)', '충분한 규모'],
+    cols: ['per', 'pbr', 'gnums', 'debt', 'div'],
+    scoreLabel: '안전마진 배수', scoreFmt: (v) => v.toFixed(1) + '배',
+    scoreDesc: '22.5 ÷ 그레이엄 수. 2배면 그가 정한 상한의 절반 값에 산다는 뜻입니다.',
+  },
+  {
+    key: 'lynch', name: '피터 린치', short: '린치', emoji: '🎯', tagline: '성장에 비해 싼가 (GARP)',
+    idea: '성장률만큼의 PER 까지가 제값(PEG 1). 성장도 너무 빠르면 오래 못 가므로 연 15~50% 구간만 봅니다.',
+    rules: ['PEG 1.0 이하', '이익성장 15~50%', 'PER 30배 이하 (흑자)',
+      '부채/자본 80% 이하', '충분한 규모'],
+    cols: ['peg', 'eg', 'per', 'div', 'debt'],
+    scoreLabel: '린치 비율', scoreFmt: (v) => v.toFixed(2),
+    scoreDesc: '(이익성장% + 배당%) ÷ PER. 린치 기준 1.5 양호 · 2.0 우수.',
+  },
+  {
+    key: 'greenblatt', name: '조엘 그린블랫', short: '그린블랫', emoji: '🔢', tagline: '마법공식 — 좋은 회사를 싸게, 순위로만',
+    idea: '자본수익률 순위와 이익수익률 순위를 더해 낮은 순으로. 판단을 넣지 않고 순위만 봅니다. 사업 구조가 다른 금융·유틸리티는 원래 제외합니다.',
+    rules: ['자본수익률 > 0', '이익수익률 > 0', '금융·유틸리티 제외', '충분한 규모'],
+    cols: ['roc', 'ey', 'per', 'roe', 'debt'],
+    scoreLabel: '순위합', scoreFmt: (v) => Math.round(v),
+    scoreDesc: '자본수익률 순위 + 이익수익률 순위. 낮을수록 두 축 모두 좋다는 뜻이라 1위가 최상위입니다.',
+    caveat: '두 축의 계산식이 시장마다 다릅니다. 한국은 DART 원문에 영업이익(=EBIT)과 유동자산·유동부채·유형자산이 '
+      + '다 있어 원본 공식 그대로예요 — 자본수익률 = EBIT ÷ (순운전자본+순고정자산), 이익수익률 = EBIT ÷ 시총. '
+      + '미국은 EBIT·투하자본을 무료로 못 얻어 ROA와 EBITDA ÷ EV로 근사했습니다. '
+      + '순위를 시장별로 따로 매기니 섞이지는 않지만, 두 시장의 순위합끼리 비교하진 마세요. '
+      + 'ROE를 쓰는 흔한 간이판은 어느 쪽에도 쓰지 않았어요 — 자사주로 자본이 거의 없어진 회사가 ROE 수천 %로 1위를 먹습니다.',
+  },
+  {
+    key: 'oneil', name: '윌리엄 오닐', short: '오닐', emoji: '🚀', tagline: 'CAN SLIM — 이익이 튀고 주가도 강한 것',
+    idea: '실적이 급증하면서 주가가 이미 신고가 부근에 있는 종목. 싼 것을 사는 게 아니라 강한 것을 삽니다.',
+    rules: ['C — 최근 분기 이익성장 20% 이상', 'A — 매출성장 10% 이상',
+      'N — 52주 신고가 대비 85% 이상', 'L — 12개월 상대강도 상위 30%',
+      '흑자 (순이익률 > 0)', '충분한 규모'],
+    cols: ['mom', 'high', 'eg', 'rg', 'per'],
+    scoreLabel: '12개월 수익률', scoreFmt: (v) => (v > 0 ? '+' : '') + v.toFixed(0) + '%',
+    scoreDesc: '최근 1년 주가 상승률. 오닐의 L(상대강도)에 해당합니다.',
+    caveat: 'CAN SLIM 7조건 중 계량 가능한 4개(C·A·N·L)만 적용했습니다. '
+      + 'I(기관 수급)·S(유통주식)·M(시장 방향)은 이 데이터로 판정할 수 없어요.',
+  },
+]
+
+function useGuruPicks() {
+  const [picks, setPicks] = useState(null)
+  const [state, setState] = useState('loading')
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        let all = [], from = 0
+        for (;;) {
+          const { data, error } = await supabase.from('guru_picks').select('*')
+            .order('guru').order('market').order('rank').range(from, from + 999)
+          if (error) throw error
+          all = all.concat(data || [])
+          if (!data || data.length < 1000) break
+          from += 1000
+        }
+        if (!alive) return
+        if (!all.length) { setState('empty'); return }
+        setPicks(all); setState('ok')
+      } catch (e) {
+        if (!alive) return
+        const msg = `${e?.message || ''} ${e?.code || ''}`
+        setState(/exist|find the table|PGRST205|42P01/i.test(msg) ? 'empty' : 'error')
+      }
+    })()
+    return () => { alive = false }
+  }, [])
+  return { picks, state }
+}
+
+function GuruSection() {
+  const { picks, state } = useGuruPicks()
+  const [key, setKey] = useState('buffett')
+  const [market, setMarket] = useState('전체')
+
+  const g = GURUS.find((x) => x.key === key)
+  // 여러 구루에 동시에 걸린 종목 — 서로 다른 철학이 같은 지점을 가리켰다는 뜻이라 따로 표시한다
+  const overlap = useMemo(() => {
+    const m = {}
+    for (const p of picks || []) (m[p.code] ||= new Set()).add(p.guru)
+    return m
+  }, [picks])
+  const countOf = (k) => (picks || []).filter((p) => p.guru === k).length
+  const rows = useMemo(() => (picks || [])
+    .filter((p) => p.guru === key
+      && (market === '전체' || (market === '미국' ? p.market === 'US' : p.market !== 'US')))
+    .sort((a, b) => (a.market === b.market ? a.rank - b.rank : a.market < b.market ? 1 : -1)),
+  [picks, key, market])
+
+  // 재무 기준 분기의 비교 기준은 시장별 중앙값으로 잡는다. 두 가지를 동시에 피하려는 것이다:
+  //  ① 시장을 안 나누면 — 같은 날 조회해도 미국은 2026-06-30, 한국은 2026-03-31이 기준이라
+  //     한국 종목이 통째로 '더 이전'으로 칠해진다. 종목이 낡은 게 아니라 나라별 공시 속도 차이다.
+  //  ② 날짜가 정확히 같은지로 재면 — 미국은 결산월이 제각각이라(lululemon 5/3, Adobe 5/29,
+  //     Micron 5/28) 최신 분기인데도 날짜가 다 다르다. 실측으로 버핏 미국 목록의 9종목이
+  //     이 이유만으로 '더 이전' 판정을 받았다. 전부 멀쩡한 최신 실적이었다.
+  // 그래서 '중앙값에서 한 분기 넘게 벌어졌을 때만' 색을 준다 — 회계연도 차이(±1개월)는 흡수하고
+  // 진짜로 한 분기 밀린 종목(시프트업 2025-12-31 등)만 잡힌다.
+  // 기준은 화면에 보이는 rows 가 아니라 picks 전체다 — 구루를 바꿀 때마다 색이 뒤집히면
+  // 배지가 무슨 뜻인지 알 수 없어진다.
+  const qRef = useMemo(() => {
+    const by = {}
+    for (const p of picks || []) {
+      if (!p.fiscal_q) continue
+      by[p.market] ||= []
+      by[p.market].push(Date.parse(p.fiscal_q))
+    }
+    return Object.fromEntries(Object.entries(by).map(([mk, xs]) =>
+      [mk, xs.sort((a, b) => a - b)[Math.floor(xs.length / 2)]]))
+  }, [picks])
+  const QTR_MS = 75 * 86400000    // 한 분기(≈91일) − 여유. 결산월 차이는 넘기고 지연만 잡는 폭
+  const qClass = (p) => {
+    if (!p.fiscal_q) return 'stale'
+    const ref = qRef[p.market]
+    if (ref == null) return 'same'
+    const d = Date.parse(p.fiscal_q) - ref
+    return d < -QTR_MS ? 'stale' : d > QTR_MS ? 'fresh' : 'same'
+  }
+  const qRefLabel = (mk) => new Date(qRef[mk]).toISOString().slice(0, 10)
+
+  return (
+    <>
+      <header>
+        <h1>구루 스크리너</h1>
+        <p className="lead">
+          투자 대가 5인의 기준을 <b>그대로 숫자로 옮겨</b> 미국(S&P500)·한국(시총 상위 500) 종목에 적용했습니다.
+          <b> 매수 추천이 아니라 "이 사람의 잣대에 걸리는 종목은 이것"</b>이에요.
+          다섯 명은 서로 반대되는 것도 봅니다 — 그레이엄은 싼 걸, 오닐은 이미 오른 걸 찾아요.
+        </p>
+      </header>
+      <StockGate state={state} need="guru_picks 테이블 생성(sql/guru_picks.sql) + guru.py 실행 필요">
+        <div className="guru-pick">
+          {GURUS.map((x) => (
+            <button key={x.key} className={key === x.key ? 'on' : ''} onClick={() => setKey(x.key)}>
+              <b>{x.emoji} {x.name}</b>
+              <span>{x.tagline}</span>
+              <em>{countOf(x.key)}종목</em>
+            </button>
+          ))}
+        </div>
+
+        <section className="card">
+          <h2>{g.emoji} {g.name} — {g.tagline}</h2>
+          <p className="guru-idea">{g.idea}</p>
+          <div className="guru-rules">
+            {g.rules.map((r) => <span key={r}>✓ {r}</span>)}
+          </div>
+          <p className="note">
+            <b>순위 기준 · {g.scoreLabel}</b> — {g.scoreDesc}
+            <br />순위는 <b>시장별로 따로</b> 매깁니다. 미국·한국을 한 줄로 세우면 시장 전체의
+            밸류에이션 차이가 종목 실력으로 둔갑해요(한국이 통째로 싸서 상위를 독식합니다).
+          </p>
+          {g.caveat && <p className="note owarn-inline">⚠️ {g.caveat}</p>}
+        </section>
+
+        <section className="card">
+          <div className="seg">
+            {['전체', '미국', '한국'].map((m) => (
+              <button key={m} className={market === m ? 'on' : ''} onClick={() => setMarket(m)}>{m}</button>
+            ))}
+          </div>
+          <p className="note">{rows.length}종목</p>
+          <p className="note fiscal">
+            📅 <b>재무 기준일을 종목마다 표시</b>했어요. 색은 그 시장의 기준 분기와 견준 겁니다 —
+            비슷하면 무채색, <span className="fq fresh">한 분기 이상 최신</span>이면 초록,{' '}
+            <span className="fq stale">한 분기 이상 이전·미상</span>이면 노랑.
+            {Object.keys(qRef).length > 0 && <>
+              <br />기준(시장별 중앙값):{' '}
+              {Object.keys(qRef).sort().map((mk, i) => (
+                <span key={mk}>{i > 0 && ' · '}{MK_KO[mk] || mk} <b>{qRefLabel(mk)}</b></span>
+              ))}
+            </>}
+            <br />
+            <b>날짜가 똑같은지로 재지 않습니다</b> — 미국은 결산월이 제각각이라(lululemon 5월 초,
+            Adobe·Micron 5월 말) 같은 최신 분기인데도 날짜가 다 달라요. 한국이 미국보다 한 분기
+            늦는 것도 종목이 낡아서가 아니라 <b>나라별 공시 속도 차이</b>라, 기준을 시장별로 나눴습니다.
+          </p>
+          {rows.length === 0 ? (
+            <p className="note">이 시장에는 {g.name}의 기준을 모두 통과한 종목이 없어요.</p>
+          ) : (
+            <div className="scr-wrap">
+              <table className="stats scr guru-tbl">
+                <thead>
+                  <tr>
+                    <th className="gr">#</th>
+                    <th>종목</th>
+                    <th>{g.scoreLabel}</th>
+                    {g.cols.map((c) => <th key={c}>{GC[c].name}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((p) => (
+                    <tr key={p.market + p.code}>
+                      <td className="gr">{p.rank}</td>
+                      <td className="scr-name">
+                        {/* 겹친 구루는 '3인' 같은 숫자가 아니라 이름을 적는다 — 누구인지 모르면
+                            "서로 다른 철학이 같은 곳을 가리켰다"는 정보가 전달되지 않는다.
+                            지금 보고 있는 구루는 빼고 나머지만(당연한 정보로 자리를 먹지 않게). */}
+                        <b>{p.name}
+                          {GURUS.filter((x) => x.key !== key && overlap[p.code]?.has(x.key))
+                            .map((x) => (
+                              <i className="gdup" key={x.key}>{x.emoji}{x.short}</i>
+                            ))}
+                        </b>
+                        <span>{p.code} · {MK_KO[p.market] || p.market} · {gcap(p.marcap, p.currency)}
+                          {p.sector && ` · ${SECTOR_KO[p.sector] || p.sector}`}
+                          {/* 모든 행에 기준일을 적는다 — '뱃지 없음 = 다수 날짜'는 화면만 봐선 알 수 없다 */}
+                          <em className={qClass(p)}>
+                            {p.fiscal_q ? `재무 ${p.fiscal_q}` : '재무 기준일 없음'}
+                          </em></span>
+                      </td>
+                      <td className="gscore">{p.score == null ? '—' : g.scoreFmt(p.score)}</td>
+                      {g.cols.map((c) => <td key={c}>{GC[c].f(p)}</td>)}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="note owarn-inline">{STOCK_CAVEAT}</p>
+          <p className="note">
+            📑 <b>한국 재무는 금감원 전자공시(DART) 원문</b>입니다 — 야후는 PER·이익성장이 30~40%
+            비어서 기준 미달이 아니라 <b>판정이 안 돼 빠지는</b> 종목이 섞였거든요. 시세·시총·차입금·배당은
+            그대로 KRX·야후를 씁니다. <b>미국은 전부 야후</b>예요.
+            <br />
+            대신 DART 가 더 빠르지는 않습니다. 정기보고서(사업·반기·분기)만 담아서
+            <b> 7월에 나오는 잠정실적은 안 들어와요</b> — 분기 전환기 2~3주는 야후 쪽이 앞섭니다.
+          </p>
+          <p className="note owarn-inline">
+            ⚠️ <b>한국 저PER 상위에 지주회사(◯◯홀딩스)가 몰리는 건 구조 때문입니다.</b> 지주사는
+            자회사 실적이 연결로 순이익에 다 잡히는데, 시가총액은 이중계산을 피하려 크게 할인돼요.
+            그래서 PER 1~5배, 이익수익률 80%대가 흔히 나옵니다 — <b>계산 오류가 아니지만
+            "그만큼 싸다"는 뜻도 아닙니다.</b> 그 이익이 주주에게 오는 몫인지는 따로 보셔야 해요.
+          </p>
         </section>
       </StockGate>
     </>

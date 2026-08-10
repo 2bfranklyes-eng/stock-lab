@@ -17,6 +17,14 @@ Supabase(방과후와 별도 프로젝트) + Python 파이프라인 + React 대�
 - `allocation.py` — 자산배분 국면(성장기대=구리/금 모멘텀 × 물가=I(t) 스냅샷) + 자산 8종 위치 점수 → `regime_daily`·`asset_daily`
 - `allocation_backtest.py` — 국면별 자산 이후수익률 통계(n_episodes 병기, 자산통화·원화 환산) → `asset_regime_stats`
 - `allocation_shock.py` — 충격완화 통계: 주식 급락월 조건표 + 위기 리플레이 6건(원화 환산 병기) → `asset_shock_stats`
+- `screener.py` — 개별 종목 재무 스냅샷(한국 시총 상위 500) + 월말 종가 → `stock_meta`·`stock_monthly`
+- `dart.py` — 금감원 전자공시(DART) 원문 재무제표 → `dart_fin`. 야후 한국 재무는 결측이 커서
+  (PER 31%·이익성장 40%) '기준 미달'과 '판정 불가'가 구분되지 않았다. DART 는 결측이 없고
+  영업이익(=EBIT)·투하자본까지 있어 마법공식을 원본대로 계산할 수 있다.
+  ⚠️ 대신 **더 느리다** — 정기보고서만 담아서 7월 잠정실적은 안 들어온다(분기 전환기 2~3주는 야후가 앞섬)
+- `guru.py` — 투자 대가 5인(버핏·그레이엄·린치·그린블랫·오닐)의 기준으로 미국(S&P500)·한국을
+  걸러 `guru_picks`. 한국 재무 = `dart_fin`, 시세·섹터·차입금 = `stock_meta`, 미국 = 야후 직접 수집
+  → **`screener.py` → `dart.py` → `guru.py` 순서로 돌려야 한다**
 - `crossval.py` / `crossval_models.py` — 매물대 모델을 투자자 실측(B)과 대조 검증 (로컬 전용)
 - `sql/` — 테이블 DDL(수동 생성용). 새 테이블 추가 시 여기 SQL을 Supabase SQL Editor에 실행
 - `plot.py` — 로컬 검증용 그래프 (matplotlib)

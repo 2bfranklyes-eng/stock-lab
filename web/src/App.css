@@ -328,6 +328,44 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   .freq-badge { background: #78350f; color: #fde68a; }
 }
 
+/* ── 구루 스크리너 ── */
+/* 구루 선택을 작은 세그먼트가 아니라 카드로 둔 이유: 이름만 보면 누가 무엇을 보는지 모른다.
+   한 줄 설명과 통과 종목 수가 붙어야 "왜 사람마다 결과가 딴판인가"가 누르기 전에 설명된다. */
+.guru-pick { display: grid; grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+  gap: 8px; margin-bottom: 14px; }
+.guru-pick button { display: flex; flex-direction: column; gap: 3px; text-align: left;
+  font: inherit; padding: 11px 13px; border-radius: 14px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--card); transition: border-color .15s; }
+.guru-pick button:hover { border-color: #cbd5e1; }
+.guru-pick button.on { border-color: #d97706; background: #fffbeb; }
+.guru-pick b { font-size: 13px; color: #111827; }
+.guru-pick span { font-size: 11px; color: #64748b; line-height: 1.5; }
+.guru-pick em { font-style: normal; font-size: 10.5px; font-weight: 700;
+  color: #d97706; margin-top: 2px; }
+
+.guru-idea { font-size: 12.5px; color: #475569; line-height: 1.75; margin: 0 0 10px; }
+.guru-rules { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 4px; }
+.guru-rules span { font-size: 11px; padding: 3px 9px; border-radius: 999px;
+  background: var(--track); color: #475569; }
+
+.stats.scr.guru-tbl .gr { width: 30px; text-align: right; color: #94a3b8;
+  font-variant-numeric: tabular-nums; }
+.stats.scr.guru-tbl .gscore { font-weight: 700; color: #d97706; font-variant-numeric: tabular-nums; }
+/* 같은 종목을 고른 다른 구루 — 서로 다른 철학이 같은 곳을 가리킨 지점이라 눈에 걸려야 한다.
+   이름을 넣으니 여러 개가 붙을 수 있어, 줄바꿈되게 두고 세로 여백을 준다. */
+.gdup { display: inline-block; margin: 1px 0 1px 5px; font-style: normal; font-size: 9.5px;
+  font-weight: 600; padding: 1px 6px; border-radius: 999px;
+  background: #ede9fe; color: #5b21b6; vertical-align: middle; white-space: nowrap; }
+
+@media (prefers-color-scheme: dark) {
+  .guru-pick b { color: #f1f5f9; }
+  .guru-pick span { color: #94a3b8; }
+  .guru-pick button.on { background: #2a1f07; border-color: #d97706; }
+  .guru-idea { color: #cbd5e1; }
+  .guru-rules span { color: #cbd5e1; }
+  .gdup { background: #2e1065; color: #c4b5fd; }
+}
+
 /* ── 차트 커스텀 툴팁 (성분 점수 0~100 + 실제 수치) ── */
 .chart-tip { background: var(--card); border: 1px solid var(--line); border-radius: 9px;
   padding: 8px 11px; box-shadow: 0 6px 20px rgba(0, 0, 0, .14); font-size: 12px; min-width: 160px; }

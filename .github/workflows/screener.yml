@@ -2,6 +2,10 @@ name: 종목 스크리너 갱신
 
 # 주 1회면 충분하다 — 재무는 분기 단위로만 바뀌고, 실적 발표(분기말+45일)에서
 # 야후 반영까지 며칠~2주가 더 걸린다. 매일 돌리면 500종목 × .info 호출로 차단당할 위험만 커진다.
+#
+# screener.py(야후, 한국 시세·섹터) → dart.py(금감원, 한국 재무) → guru.py(야후, 미국 + 채점)
+# 순서가 중요하다 — dart.py 는 stock_meta 의 종목 목록을 읽고, guru.py 는 그 둘을 합쳐 채점한다.
+# 뒤바뀌면 한국 종목이 조용히(에러 없이) 후보에서 빠진다.
 on:
   schedule:
     # 금 23:00 UTC = 토 08:00 KST — 한 주 거래가 모두 끝난 뒤
@@ -17,6 +21,13 @@ jobs:
       SCREENER_TOP_N: '500'
       # 유니버스(시총 상위) 밖이어도 반드시 포함할 종목코드. 보유 종목을 여기 넣으면 된다.
       SCREENER_ALWAYS: ''
+      # 한 잡에서 한국 500 + 미국 503 = 1,003 요청이 나간다. 로컬에서 동시 8로 돌렸을 때
+      # 정확히 이 구간에서 야후가 차단했다(YFRateLimitError) — CI 에서는 더 낮춰 잡는다.
+      GURU_WORKERS: '3'
+      DART_API_KEY: ${{ secrets.DART_API_KEY }}
+      # DART 는 동시 요청에 아주 민감하다 — 6으로 돌렸더니 486종목 중 257이 TCP reset 으로
+      # 끊겼고, 3으로 낮춰도 IP 자체가 한동안 막혔다. 순차(1)가 안전하다. 500종목 ≈ 8분.
+      DART_WORKERS: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -24,3 +35,8 @@ jobs:
           python-version: '3.12'
       - run: pip install -r requirements.txt
       - run: python screener.py
+      # DART 가 중간에 끊겨도 여기까지는 저장된다(50종목마다 적재 + 다음 실행이 이어받기).
+      # 그래서 실패해도 잡을 세우지 않는다 — guru.py 는 야후 값으로 폴백해 돌아간다.
+      - run: python dart.py
+        continue-on-error: true
+      - run: python guru.py

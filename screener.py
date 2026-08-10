@@ -82,6 +82,11 @@ def snapshot(row):
         "close": float(row["Close"]) if pd.notna(row["Close"]) else None,
         "marcap": float(row["Marcap"]),
         "per": per, "pbr": pbr, "roe": roe,
+        # guru.py 의 마법공식이 쓰는 두 축. 여기서 같이 담는 건 요청을 아끼려는 것이다 —
+        # 어차피 부르는 info 한 번에 들어 있는 값이라, 따로 받으면 500요청이 그냥 늘고
+        # 야후 rate limit 에 걸린다(실측: 별도 수집 시 500종목 중 135종목만 채워짐).
+        "roa": info.get("returnOnAssets"),
+        "ev_ebitda": info.get("enterpriseToEbitda"),
         "debt_to_equity": info.get("debtToEquity"),
         "op_margin": info.get("operatingMargins"),
         "profit_margin": info.get("profitMargins"),
@@ -104,6 +109,10 @@ def rnd(v, n=4):
 def run_meta(uni):
     rows, miss = [], {}
     t0 = time.time()
+    # upsert 의 UPDATE 경로에서는 컬럼의 default now() 가 다시 걸리지 않는다. 안 넣으면
+    # updated_at 이 '최초 INSERT 시각'에 얼어붙어, 방금 갱신한 행이 2주 전 데이터처럼 보인다.
+    # (실측: 8/10에 500종목을 다시 받았는데 485행이 7/26으로 남아 있었다.)
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
     for i, (_, r) in enumerate(uni.iterrows(), 1):
         try:
             s = snapshot(r)
@@ -113,8 +122,10 @@ def run_meta(uni):
         for k, v in s.items():
             if v is None and k not in ("code", "name", "market"):
                 miss[k] = miss.get(k, 0) + 1
-        rows.append({k: (rnd(v) if isinstance(v, (int, float)) and k != "code" else v)
-                     for k, v in s.items()})
+        row = {k: (rnd(v) if isinstance(v, (int, float)) and k != "code" else v)
+               for k, v in s.items()}
+        row["updated_at"] = now
+        rows.append(row)
         if i % 100 == 0:
             print(f"  {i}/{len(uni)}  ({time.time() - t0:.0f}초)")
     for i in range(0, len(rows), 500):
