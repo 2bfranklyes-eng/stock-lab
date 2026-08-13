@@ -304,6 +304,43 @@ def pit_backfill(start_ym="201501"):
     print(f"[KR] PIT 백필 완료: 총 {total:,}행")
 
 
+def prune_dropped(codes, today):
+    """워치리스트를 '벗어난' 종목의 창 밖 행을 지운다.
+
+    바로 위 삭제는 codes(=이번에 뽑은 현재 워치리스트)만 훑는다. 그래서 상장폐지되거나
+    시총 컷 아래로 떨어져 목록에서 빠진 종목의 행에는 영영 닿지 않고 영구히 남았다
+    (실측 2026-08-12: 33종목 11,144행). 종목당 양은 2년치로 묶여 있지만 이탈 종목 수가
+    해마다 늘어 총량은 상한이 없고, 갱신이 멈춘 낡은 행이 분석에 섞이는 문제도 있었다.
+
+    티어는 vp_stocks에 남아 있는 hist_days를 그대로 쓴다 — 일시적으로 목록을 벗어난
+    5년 티어 종목을 2년으로 잘라버리면 전체 재스캔 없이는 복구가 안 되기 때문이다.
+    (vp_stocks는 upsert만 하므로 이탈 종목의 마지막 티어가 남아 있다.)"""
+    rows, step, start = [], 1000, 0
+    while True:
+        r = sb.table("vp_stocks").select("code,hist_days") \
+              .order("code").range(start, start + step - 1).execute().data
+        rows += r
+        if len(r) < step:
+            break
+        start += step
+
+    by_tier = {}
+    for x in rows:
+        if x["code"] in codes:
+            continue
+        by_tier.setdefault(int(x.get("hist_days") or SHALLOW_DAYS), []).append(x["code"])
+    if not by_tier:
+        print("  워치리스트 이탈 종목 없음")
+        return
+
+    for tier, cs in sorted(by_tier.items()):
+        cut = (today - timedelta(days=tier)).isoformat()
+        for i in range(0, len(cs), 100):
+            sb.table("stock_daily").delete().in_("code", cs[i:i + 100]) \
+              .lt("dt", cut).execute()
+        print(f"  워치리스트 이탈 {len(cs)}종목({tier}일 티어) — {cut} 이전 행 정리")
+
+
 def run_stocks(force_start=None):
     """워치리스트 종목의 일별 시세(거래대금·시총·상장주식수)를 stock_daily에 적재.
     스캔은 '날짜 단위'(한 콜에 그 날 전 종목) — 워치리스트가 바뀌어 과거가 빈 종목이 생기면
@@ -391,6 +428,7 @@ def run_stocks(force_start=None):
     for i in range(0, len(shallow), 100):
         sb.table("stock_daily").delete().in_("code", shallow[i:i + 100]) \
           .lt("dt", shallow_from.isoformat()).execute()
+    prune_dropped(codes, today)
     sb.table("ingest_log").insert(
         {"source": "krx_stock", "market": "KR", "rows": saved, "status": "ok"}).execute()
 
