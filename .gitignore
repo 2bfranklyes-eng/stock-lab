@@ -14,6 +14,11 @@ cgo_dry.csv
 # factor.py 로컬 캐시(94만 행) — 매번 5분씩 받지 않으려는 것뿐이라 저장소엔 불필요
 factor_cache.pkl
 marketmode_cache.pkl
+flow_cache.pkl
+flowcap_cache.pkl
+
+# 유튜브 자막 등 외부 텍스트 — 검토용으로만 두고 저장소엔 올리지 않는다(저작권)
+*.txt
 
 # dart.py 로컬 캐시(corpCode 3.5MB) — 매 실행마다 다시 받으면 DART가 IP를 막는다
 .cache/
