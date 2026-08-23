@@ -483,3 +483,19 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
    경고(.stale-warn)와 같은 노랑을 쓰면 상시 경보가 되어 진짜 경고가 묻힌다. */
 .lag-note { margin: 8px 0 12px; padding: 9px 12px; border-radius: 8px; font-size: 12.5px;
   line-height: 1.55; background: var(--track); color: #475569; border: 1px solid transparent; }
+
+/* 위기 리플레이 카드의 자산 커버리지 한계 각주 */
+.al-epnote { margin-top: 6px; font-size: 11px; line-height: 1.45; color: var(--dim); }
+
+/* 신용스프레드 조기경보 게이지 — 현재값 하나를 과거 두 위기 눈금 위에 얹는다 */
+.cg { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; }
+.cg-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.cg-now { font-size: 18px; font-weight: 700; color: #4a3aa7; }
+.cg-track { position: relative; height: 10px; margin: 14px 0 10px; border-radius: 5px;
+  background: linear-gradient(90deg, #16a34a 0%, #d97706 45%, #c0392b 100%); }
+.cg-mark { position: absolute; top: -4px; width: 2px; height: 18px; border-radius: 1px; transform: translateX(-1px); }
+.cg-dot { position: absolute; top: 50%; width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; border: 3px solid #4a3aa7; transform: translate(-50%, -50%); box-shadow: 0 1px 4px rgba(0,0,0,.35); }
+.cg-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--dim); }
+.cg-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.cg-legend i { width: 8px; height: 8px; border-radius: 2px; }

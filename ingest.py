@@ -505,6 +505,9 @@ def run_kr_shorting():
 FRED_KEY = os.environ.get("FRED_API_KEY", "").strip()
 FRED_ITEMS = {                    # code → (FRED series id, 메타 name)
     "us_real10y": ("DFII10", "미 10년 실질금리(TIPS)"),
+    # 신용스프레드 조기경보 — 닷컴·금융위기 모두 주가 고점 시점엔 좁았고(2.09 / 1.90)
+    # 6개월에 걸쳐 벌어졌다(2.52 / 3.38). HYG/IEI 기반 c_credit 은 상대값이라 이 수준 비교가 안 된다.
+    "us_credit_spread": ("BAA10Y", "신용스프레드(무디스 Baa − 미10년)"),
 }
 
 

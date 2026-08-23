@@ -59,8 +59,11 @@ const L_SERIES = [
     raw: (p) => (p.raw_curve == null ? null : (p.raw_curve >= 0 ? '+' : '') + p.raw_curve.toFixed(2) + '%p') },
   { key: 'c_fx', name: '환율', color: '#d55181', width: 1.3,
     raw: (p, m) => (m === 'US' ? (p.raw_dxy == null ? null : p.raw_dxy.toFixed(1)) : wonFmt(p.raw_usdkrw)) },
+  // raw_credit = 신용스프레드 절대값(%p). US=무디스 Baa−미10년, KR=회사채3년−국고채3년.
+  // 점수(c_credit)는 상대값이라 '역사적 위치'를 못 읽어서 원값을 따로 띄운다.
   { key: 'c_credit', name: '신용', color: '#4a3aa7', width: 1.3,
-    raw: (p, m) => (m === 'KR' && p.raw_dxy != null ? p.raw_dxy.toFixed(2) + '%p' : null) },
+    raw: (p, m) => (p.raw_credit != null ? p.raw_credit.toFixed(2) + '%p'
+      : (m === 'KR' && p.raw_dxy != null ? p.raw_dxy.toFixed(2) + '%p' : null)) },
 ]
 const L_BANDS = [
   { name: '극단긴축', color: '#c0392b' },
@@ -936,8 +939,10 @@ function RawFigures({ latest, market }) {
   const spread = (v) => (v == null ? '—' : `${v.toFixed(2)}%p`)
   // KR: raw_us10y=국고채10년, raw_dxy=신용스프레드(회사채-국고채) — liquidity.py에서 시장별 의미 다름
   const items = market === 'US'
-    ? [['미 10년물 금리', pct(latest.raw_us10y)], ['달러지수(DXY)', num(latest.raw_dxy)]]
-    : [['원/달러', num(latest.raw_usdkrw, 0)], ['국고채 10년', pct(latest.raw_us10y)], ['신용스프레드', spread(latest.raw_dxy)]]
+    ? [['미 10년물 금리', pct(latest.raw_us10y)], ['달러지수(DXY)', num(latest.raw_dxy)],
+       ['신용스프레드', spread(latest.raw_credit)]]
+    : [['원/달러', num(latest.raw_usdkrw, 0)], ['국고채 10년', pct(latest.raw_us10y)],
+       ['신용스프레드', spread(latest.raw_credit ?? latest.raw_dxy)]]
   return (
     <div className="raw-figs">
       {items.map(([label, val]) => (
@@ -983,7 +988,7 @@ function LiquidityColumn({ market, flag, name }) {
           const to = Math.min(from + PAGE - 1, WANT - 1)
           const { data, error } = await supabase
             .from('liquidity_daily')
-            .select('dt,l_score,band,c_rate,c_curve,c_fx,c_credit,raw_us10y,raw_dxy,raw_usdkrw,raw_curve')
+            .select('dt,l_score,band,c_rate,c_curve,c_fx,c_credit,raw_us10y,raw_dxy,raw_usdkrw,raw_curve,raw_credit')
             .eq('market', market)
             .order('dt', { ascending: false })
             .range(from, to)
@@ -3033,12 +3038,63 @@ const ALLOC_ASSETS = [
 
 // 위기 리플레이 카드 라벨 — 구간·기준주식은 allocation_shock.py의 EPISODES와 짝.
 const EPISODE_META = {
+  ep_dotcom: { name: '2000 닷컴버블 붕괴', bench: 'S&P500', period: '2000.03~2002.10',
+    note: '금·미국채는 당시 시세원이 없어 빠졌고, 원자재는 DBC 미상장이라 S&P GSCI 지수로 대체' },
+  ep_gfc: { name: '2008 금융위기', bench: 'S&P500', period: '2007.10~2009.03',
+    note: '한국 국고채는 당시 ETF가 없어 빠짐' },
   ep_2015yuan: { name: '2015 위안화 쇼크', bench: '코스피', period: '2015.07~08' },
   ep_2018q4: { name: '2018 4분기 성장쇼크', bench: 'S&P500', period: '2018.09~12' },
   ep_2020covid: { name: '2020 코로나 폭락', bench: 'S&P500', period: '2020.02~03' },
   ep_2022rates: { name: '2022 인플레 긴축', bench: 'S&P500', period: '2022.01~10' },
   ep_2024yen: { name: '2024 엔캐리 청산', bench: '코스피', period: '2024.07~08' },
   ep_2026kr: { name: '2026 코스피 급락', bench: '코스피', period: '2026.06~', live: true },
+}
+// 신용스프레드 조기경보 — 닷컴·금융위기 모두 '주가 고점 시점엔 좁았다가 6개월에 걸쳐 벌어졌다'.
+// 그래서 절대수준을 과거 두 위기의 같은 단계와 나란히 놓는 게 이 지표의 전부다.
+// 수치는 FRED BAA10Y(무디스 Baa − 미10년물) 실측.
+const CREDIT_MARKS = [
+  { at: 1.90, label: '금융위기 고점일', tone: '#64748b' },
+  { at: 2.09, label: '닷컴 고점일', tone: '#64748b' },
+  { at: 2.52, label: '닷컴 +6개월', tone: '#d97706' },
+  { at: 3.38, label: '금융위기 +6개월', tone: '#d97706' },
+  { at: 3.90, label: '닷컴 최악', tone: '#c0392b' },
+  { at: 6.16, label: '금융위기 최악', tone: '#c0392b' },
+]
+const CREDIT_MAX = 6.6
+function CreditGauge({ v }) {
+  if (v == null) {
+    return (
+      <div className="al-empty">신용스프레드 지표 준비 필요 —
+        <span> sql/liquidity_daily_add_raw_credit.sql 실행 + ingest.py·liquidity.py 재실행</span></div>
+    )
+  }
+  const pos = Math.min(100, Math.max(0, (v / CREDIT_MAX) * 100))
+  return (
+    <div className="cg">
+      <div className="cg-head">
+        <b>신용스프레드 조기경보</b>
+        <span className="cg-now">현재 {v.toFixed(2)}<span className="al-dim">%p</span></span>
+      </div>
+      <div className="cg-track">
+        {CREDIT_MARKS.map((m) => (
+          <i key={m.label} className="cg-mark" style={{ left: `${(m.at / CREDIT_MAX) * 100}%`, background: m.tone }}
+            title={`${m.label} ${m.at.toFixed(2)}%p`} />
+        ))}
+        <i className="cg-dot" style={{ left: `${pos}%` }} />
+      </div>
+      <div className="cg-legend">
+        {CREDIT_MARKS.map((m) => (
+          <span key={m.label}><i style={{ background: m.tone }} />{m.label} {m.at.toFixed(2)}</span>
+        ))}
+      </div>
+      <p className="note" style={{ marginTop: 8 }}>
+        두 위기 모두 <b>주가 고점 시점엔 스프레드가 좁았습니다</b>(닷컴 2.09, 금융위기 1.90).
+        벌어지는 데 <b>6개월</b>이 걸렸고, 그게 이 지표를 조기경보로 쓸 수 있는 이유입니다.
+        낮다고 안전하다는 뜻은 아니에요 — 금융위기도 1.90에서 시작했습니다.
+        지금 값이 <b>위로 움직이기 시작하는지</b>가 볼 지점입니다.
+      </p>
+    </div>
+  )
 }
 const CORR_COLORS = { us_bond: '#2471a3', kr_bond: '#0f766e', gold: '#d97706', usdkrw: '#7c3aed' }
 
@@ -3088,6 +3144,7 @@ function AllocationSection() {
   const [assets, setAssets] = useState([])
   const [stats, setStats] = useState([])
   const [shock, setShock] = useState([])
+  const [credit, setCredit] = useState(null)   // 미국 신용스프레드 최신값(%p)
   const [corr, setCorr] = useState([])
   const [h, setH] = useState(20)
   const [ccy, setCcy] = useState('loc')          // 성적표: 자산통화 | 원화 환산
@@ -3116,6 +3173,10 @@ function AllocationSection() {
         setState('ok')
         // 충격완화 통계 + 상관 시계열은 뒤에 와도 되는 부가 데이터 — 테이블이 아직 없으면 조용히 생략
         const { data: sh } = await supabase.from('asset_shock_stats').select('*')
+        // select('*') 로 받는다 — raw_credit 컬럼 추가 전이면 컬럼 지정 조회가 400 으로 죽는다.
+        const { data: lq } = await supabase.from('liquidity_daily')
+          .select('*').eq('market', 'US').order('dt', { ascending: false }).limit(1)
+        setCredit(lq?.[0]?.raw_credit ?? null)
         if (alive && sh) setShock(sh)
         // 상관 차트: 자산 4종 × 최근 3년 — 요청당 1,000행 상한이라 자산별로 나눠 받는다
         const cs = []
@@ -3318,6 +3379,7 @@ function AllocationSection() {
                         </div>
                       )
                     })}
+                    {meta.note && <div className="al-epnote">※ {meta.note}</div>}
                   </div>
                 )
               })}
@@ -3329,6 +3391,14 @@ function AllocationSection() {
               환율(원달러 +20%)이</b>, 2026(지금)은 원자재만 버티고 <b>원화 강세라 환율 방패도
               없다</b>는 것. 항상 통하는 방어재는 없었습니다.
             </p>
+            <p className="note">
+              2000·2008을 넣으니 <b>원자재의 함정</b>이 드러납니다 — 두 위기 모두 초기 6개월엔
+              원자재가 1등이었지만(닷컴 +17%, 금융위기 +33%) 끝까지 들면 <b>−25%, −43%</b>였어요.
+              6개월 성적은 최종 성적의 신호가 아니었습니다. 반대로 <b>2008년 금은 원화 기준 낙폭
+              0.0%</b>로 가장 깨끗했고, 한국 투자자를 실제로 구한 건 <b>원달러 +71%</b>였습니다.
+              다만 닷컴 땐 첫 6개월 환율이 −1%로 방패가 늦게 왔습니다.
+            </p>
+            <CreditGauge v={credit} />
 
           </>
         )}

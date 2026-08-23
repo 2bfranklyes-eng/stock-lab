@@ -30,6 +30,7 @@ sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"
 
 from allocation import fetch_codes, deglitch, ASSETS, GLITCH_FILTER  # noqa: E402
 from allocation_backtest import USD_ASSETS                            # noqa: E402
+import history                                                        # noqa: E402
 
 BENCH = {"US": "us_index", "KR": "kr_index"}
 # 구간은 기준주식의 실제 고점→저점(2026은 진행 중이라 끝이 None=최신일).
@@ -40,6 +41,13 @@ EPISODES = [
     ("ep_2022rates", "us_index", "2022-01-03", "2022-10-12"),
     ("ep_2024yen",   "kr_index", "2024-07-11", "2024-08-05"),
     ("ep_2026kr",    "kr_index", "2026-06-22", None),
+]
+# 2015년 이전 구간 — asset_daily 가 못 덮으므로 history.py 로 그때만 외부 시세를 받는다.
+# 고점·저점은 S&P500 실측 앵커(닷컴 -49.1%, 금융위기 -56.8%).
+# 자산 커버리지가 최근 에피소드보다 얇다(닷컴은 금·미국채 시세원 없음) — 웹에서 그대로 드러난다.
+HIST_EPISODES = [
+    ("ep_dotcom", "us_index", "2000-03-24", "2002-10-09"),
+    ("ep_gfc",    "us_index", "2007-10-09", "2009-03-09"),
 ]
 
 
@@ -52,6 +60,42 @@ def monthly(px):
 def krw_px(px, krw, a):
     """달러자산이면 원화 환산 가격, 원화자산이면 그대로."""
     return px * krw.reindex(px.index, method="ffill") if a in USD_ASSETS else px
+
+
+def episode_rows(scope, bcode, a0, a1, pxmap, krw):
+    """위기 구간 하나의 자산별 행. pxmap 은 asset_daily(최근) 또는 history.panel(과거) 어느 쪽이든 된다."""
+    bench = pxmap.get(bcode)
+    if bench is None or bench.empty:
+        print(f"{scope}: 기준주식 데이터 없음 — 건너뜀")
+        return []
+    dates = bench.loc[a0:(a1 or bench.index[-1])].index
+    if len(dates) < 5:
+        print(f"{scope}: 구간 데이터 부족 — 건너뜀")
+        return []
+    b_ret = (bench[dates[-1]] / bench[dates[0]] - 1) * 100
+    out = []
+    for a in ASSETS:
+        if a not in pxmap:            # 그 시절 시세원이 없는 자산(과거 구간의 kr_bond·btc 등)
+            continue
+        p = pxmap[a].reindex(dates, method="ffill")
+        pk = krw_px(pxmap[a], krw, a).reindex(dates, method="ffill")
+        # 구간 시작 전 이력이 없는 자산은 건너뜀 — ffill은 앞을 못 채워 선두가 NaN이 되고,
+        # NaN이 insert에 들어가면 배치 전체가 죽는다(JSON 비호환). 부분 구간 통계는
+        # mdd를 과소평가하므로 만들지 않는 쪽이 정직하다. 닷컴 구간의 금·미국채가 실제로 여기 걸린다.
+        if p.isna().any() or pk.isna().any():
+            continue
+        cum = (p.iloc[-1] / p.iloc[0] - 1) * 100
+        # MDD는 자산 '자기 달력'으로 — 기준주식 달력에 얹으면 BTC 주말 급락이 안 잡혀
+        # 위험지표가 한 방향(과소)으로만 틀린다 (실측 최대 3.8%p 차이).
+        win = pxmap[a].loc[dates[0]:dates[-1]]
+        mdd = ((win / win.cummax() - 1).min()) * 100
+        out.append({"basis": "EP", "scope": scope, "asset": a, "n": int(len(dates)),
+                     "ret_avg": round(float(cum), 2), "ret_med": None,
+                     "ret_krw": round(float((pk.iloc[-1] / pk.iloc[0] - 1) * 100), 2),
+                     "hit": None, "worst": None, "mdd": round(float(mdd), 2),
+                     "stock_ret": round(float(b_ret), 2)})
+
+    return out
 
 
 def main():
@@ -92,31 +136,16 @@ def main():
 
     # ── ② 위기 리플레이 ──
     for scope, bcode, a0, a1 in EPISODES:
-        bench = px_of[bcode]
-        dates = bench.loc[a0:(a1 or bench.index[-1])].index
-        if len(dates) < 5:
-            print(f"{scope}: 구간 데이터 부족 — 건너뜀")
-            continue
-        b_ret = (bench[dates[-1]] / bench[dates[0]] - 1) * 100
-        for a in ASSETS:
-            p = px_of[a].reindex(dates, method="ffill")
-            pk = krw_px(px_of[a], krw, a).reindex(dates, method="ffill")
-            # 구간 시작 전 이력이 없는 자산은 건너뜀 — ffill은 앞을 못 채워 선두가 NaN이 되고,
-            # NaN이 insert에 들어가면 배치 전체가 죽는다(JSON 비호환). 부분 구간 통계는
-            # mdd를 과소평가하므로 만들지 않는 쪽이 정직하다. (2008 백필 등 과거 확장 대비)
-            if p.isna().any() or pk.isna().any():
-                continue
-            cum = (p.iloc[-1] / p.iloc[0] - 1) * 100
-            # MDD는 자산 '자기 달력'으로 — 기준주식 달력에 얹으면 BTC 주말 급락이 안 잡혀
-            # 위험지표가 한 방향(과소)으로만 틀린다 (실측 최대 3.8%p 차이).
-            win = px_of[a].loc[dates[0]:dates[-1]]
-            mdd = ((win / win.cummax() - 1).min()) * 100
-            rows.append({"basis": "EP", "scope": scope, "asset": a, "n": int(len(dates)),
-                         "ret_avg": round(float(cum), 2), "ret_med": None,
-                         "ret_krw": round(float((pk.iloc[-1] / pk.iloc[0] - 1) * 100), 2),
-                         "hit": None, "worst": None, "mdd": round(float(mdd), 2),
-                         "stock_ret": round(float(b_ret), 2)})
+        rows += episode_rows(scope, bcode, a0, a1, px_of, krw)
 
+    # 2015년 이전 구간은 외부 시세(history.py)로 같은 함수를 태운다.
+    for scope, bcode, a0, a1 in HIST_EPISODES:
+        hist, used = history.panel(a0, a1)
+        if bcode not in hist:
+            print(f"{scope}: 기준주식 시세원 없음 — 건너뜀")
+            continue
+        print(f"{scope}: 시세원 " + ", ".join(f"{a}={t}" for a, t in used.items()))
+        rows += episode_rows(scope, bcode, a0, a1, hist, hist["usdkrw"])
     ep_view = pd.DataFrame([r for r in rows if r["scope"] != "crash10"])
     for scope in ep_view["scope"].unique():
         v = ep_view[ep_view["scope"] == scope]

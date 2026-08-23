@@ -16,7 +16,7 @@ except Exception:
 load_dotenv()
 sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_KEY"])
 
-NEEDED = ["us_10y", "us_3m", "dxy", "hyg", "iei",                   # 미국 유동성
+NEEDED = ["us_10y", "us_3m", "dxy", "hyg", "iei", "us_credit_spread",  # 미국 유동성
           "kr_3y", "kr_10y", "kr_corp3y", "usdkrw",                 # 한국 유동성(국내물 + 원/달러)
           "kr_cd91", "kr_call"]                                     # 한국 커브의 단기 쪽 후보
 # 커브 단기물 우선순위 — 앞에서부터 '충분히 쌓인' 첫 코드를 쓴다.
@@ -80,6 +80,10 @@ def compute(w, market):
         cr = d["hyg"] / d["iei"]
         c_credit = pct_rank(cr / cr.rolling(60).mean())
         raw_10y, raw_b, raw_krw = d["us_10y"], d["dxy"], None   # 카드: 미10년물 / DXY
+        # 신용스프레드 절대수준(%p) — c_credit 과 별개다. c_credit 은 60일 평균 대비 상대값이라
+        # 평온기엔 중립을 가리키고, '지금이 닷컴·금융위기 초입 대비 어디인가'를 답하지 못한다.
+        # dropna 대상에 넣지 않는다 — BAA10Y 결측이 유동성 지수 전체를 날리면 안 된다.
+        raw_cr = w["us_credit_spread"] if "us_credit_spread" in w.columns else None
     else:  # KR — 4성분 전부 국내물(커브·신용까지). 미국·글로벌 영향은 원/달러(c_fx)로 유입.
         short = next((c for c in KR_SHORT if c in w.columns and w[c].notna().sum() > 500), "kr_3y")
         d = w[list(dict.fromkeys(["kr_3y", "kr_10y", "kr_corp3y", "usdkrw", short]))].dropna()
@@ -92,6 +96,7 @@ def compute(w, market):
         spread = d["kr_corp3y"] - d["kr_3y"]                   # 회사채-국고채 신용스프레드
         c_credit = 100 - pct_rank(spread)                     # 스프레드 넓을수록 신용경색=긴축 → 뒤집기
         raw_10y, raw_b, raw_krw = d["kr_10y"], spread, d["usdkrw"]  # 카드: 국고채10년 / 신용스프레드 / 원달러
+        raw_cr = spread                                        # 한국은 국내물 스프레드가 곧 절대수준
 
     L = pd.concat([c_rate, c_curve, c_fx, c_credit], axis=1).mean(axis=1).ewm(span=10).mean()
     out = pd.DataFrame({"l_score": L, "c_rate": c_rate, "c_curve": c_curve,
@@ -103,6 +108,12 @@ def compute(w, market):
     out["raw_dxy"] = raw_b.reindex(out.index)
     out["raw_usdkrw"] = raw_krw.reindex(out.index) if raw_krw is not None else float("nan")
     out["raw_curve"] = curve.reindex(out.index)       # 일드커브 실제값(%p) — 툴팁용(양 시장 공통)
+    # 신용스프레드 절대값(%p). dropna() 를 먼저 거는 게 핵심 —
+    # raw_cr 은 피벗 컬럼이라 모든 날짜 라벨을 갖고 값만 NaN 이다. 그 상태로 reindex(method="ffill")
+    # 하면 라벨이 이미 존재하므로 ffill 이 동작하지 않고 NaN 이 그대로 남는다.
+    # FRED BAA10Y 는 하루 늦게 올라와서, 이걸 놓치면 항상 '최신 행만 null' 이 된다.
+    out["raw_credit"] = (raw_cr.dropna().reindex(out.index, method="ffill") if raw_cr is not None
+                         else pd.Series(float("nan"), index=out.index))
     return out
 
 
@@ -124,6 +135,7 @@ def main(markets):
                  "c_rate": round(float(r.c_rate), 2), "c_curve": round(float(r.c_curve), 2),
                  "c_fx": round(float(r.c_fx), 2), "c_credit": round(float(r.c_credit), 2),
                  "raw_us10y": rnd(r.raw_us10y, 2), "raw_dxy": rnd(r.raw_dxy, 2),
+                 "raw_credit": rnd(r.raw_credit, 2),
                  "raw_usdkrw": rnd(r.raw_usdkrw, 2), "raw_curve": rnd(r.raw_curve, 2)}
                 for d, r in out.iterrows()]
         for i in range(0, len(rows), 1000):
