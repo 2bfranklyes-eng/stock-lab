@@ -7,9 +7,13 @@ name: 종목 스크리너 갱신
 # 순서가 중요하다 — dart.py 는 stock_meta 의 종목 목록을 읽고, guru.py 는 그 둘을 합쳐 채점한다.
 # 뒤바뀌면 한국 종목이 조용히(에러 없이) 후보에서 빠진다.
 on:
-  schedule:
-    # 금 23:00 UTC = 토 08:00 KST — 한 주 거래가 모두 끝난 뒤
-    - cron: '0 23 * * 5'
+  # ⏸ Supabase 창고(hffuxqijuoempxeblddx)를 휴면시킨 동안 자동 실행을 멈춘다 (2026-09-02).
+  #    켜 둔 채 창고를 정지하면 회차마다 실패해 실패 알림만 쌓인다.
+  #    창고를 재개하면 아래 schedule 주석을 풀 것 — refresh 는 '마지막 저장일 + 1일'부터
+  #    이어받는 증분 구조라(krx.py·holders.py) 쉰 기간은 첫 실행에서 저절로 메워진다.
+  # schedule:
+  #   # 금 23:00 UTC = 토 08:00 KST — 한 주 거래가 모두 끝난 뒤
+  #   - cron: '0 23 * * 5'
   workflow_dispatch: {}   # 수동 실행 버튼
 
 jobs:
