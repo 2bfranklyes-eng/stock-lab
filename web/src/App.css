@@ -499,3 +499,62 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
 .cg-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--dim); }
 .cg-legend span { display: inline-flex; align-items: center; gap: 4px; }
 .cg-legend i { width: 8px; height: 8px; border-radius: 2px; }
+
+/* ── 기업 점검 ── */
+/* 축 점수 막대 — 표 안에서 숫자만 늘어놓으면 네 축의 모양(어디가 강하고 약한지)이 안 읽힌다 */
+.ck-tbl tbody tr { cursor: pointer; }
+.ck-tbl tbody tr:hover td { background: var(--track); }
+.stats.scr tr.ck-sel td { background: #fffbeb; }
+.ck-tbl .gr { width: 30px; text-align: right; color: #94a3b8; font-variant-numeric: tabular-nums; }
+.ck-tbl .gscore { font-weight: 700; color: #d97706; font-variant-numeric: tabular-nums; }
+.ck-ax { min-width: 52px; }
+.ck-ax .bar, .ck-axbox .bar { position: relative; height: 6px; border-radius: 3px; background: var(--track);
+  overflow: hidden; margin: 2px 0; }
+.ck-ax .bar i, .ck-axbox .bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: #d97706; }
+.ck-ax span { font-size: 10.5px; color: #64748b; font-variant-numeric: tabular-nums; }
+.stats.scr td.ck-flags { white-space: normal; min-width: 150px; text-align: left; }
+/* 경고 칩 — 수준별 색. 노랑을 정보성 경고에까지 쓰면 진짜 경고(희석·현금)가 묻힌다 */
+.ck-flag { display: inline-block; margin: 1px 4px 1px 0; font-style: normal; font-size: 10px;
+  padding: 1px 7px; border-radius: 999px; white-space: nowrap; vertical-align: middle; }
+.ck-flag.bad { background: #fee2e2; color: #991b1b; }
+.ck-flag.warn { background: #fef3c7; color: #92400e; }
+.ck-flag.info { background: var(--track); color: #64748b; }
+.ck-flag.good { background: #dcfce7; color: #166534; }
+.ck-legend { display: inline-block; margin: 2px 12px 2px 0; }
+.ck-axes { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 8px 0 4px; }
+.ck-axbox { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px;
+  display: flex; flex-direction: column; gap: 2px; }
+.ck-axbox b { font-size: 13px; color: #111827; }
+.ck-axbox span { font-size: 11px; color: #64748b; line-height: 1.5; }
+.ck-detail .ck-axbox b { font-size: 20px; color: #d97706; font-variant-numeric: tabular-nums; }
+.ck-axbox em { font-style: normal; font-size: 11px; color: #64748b; }
+.ck-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.ck-head h2 { font-size: 16px; margin: 0; }
+.ck-head .note { margin: 0; }
+.ck-close { margin-left: auto; font: inherit; font-size: 13px; border: 1px solid var(--line); background: var(--card);
+  color: #64748b; border-radius: 8px; padding: 2px 9px; cursor: pointer; }
+.ck-h3 { font-size: 12.5px; margin: 16px 0 6px; color: #334155; }
+.ck-h3 small { font-weight: 400; color: #94a3b8; }
+.ck-chart { width: 100%; }
+.ck-qt td, .ck-qt th { font-variant-numeric: tabular-nums; }
+.ck-qt th { cursor: default !important; }
+.ck-qt a, .ck-ev a { color: inherit; }
+.ck-ev { list-style: none; padding: 0; margin: 4px 0 0; font-size: 12px; }
+.ck-ev li { display: flex; gap: 8px; align-items: baseline; padding: 5px 0; border-bottom: 1px dashed var(--line); }
+.ck-ev time { flex: none; width: 78px; color: #94a3b8; font-variant-numeric: tabular-nums; font-size: 11.5px; }
+.ck-ev a { overflow: hidden; text-overflow: ellipsis; }
+.ck-thesis { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12.5px; margin: 4px 0 8px; }
+.ck-thesis dt { color: #64748b; font-weight: 600; }
+.ck-thesis dd { margin: 0; }
+.ck-rv { list-style: none; padding: 0; margin: 4px 0 0; font-size: 12.5px; }
+.ck-rv li { padding: 8px 0; border-bottom: 1px dashed var(--line); }
+.ck-rv p { margin: 4px 0 0; line-height: 1.7; }
+@media (prefers-color-scheme: dark) {
+  .stats.scr tr.ck-sel td { background: #2a1f07; }
+  .ck-flag.bad { background: #450a0a; color: #fca5a5; }
+  .ck-flag.warn { background: #422006; color: #fcd34d; }
+  .ck-flag.info { color: #94a3b8; }
+  .ck-flag.good { background: #052e16; color: #86efac; }
+  .ck-axbox b, .ck-h3 { color: #e2e8f0; }
+  .ck-axbox span, .ck-axbox em, .ck-thesis dt { color: #94a3b8; }
+}

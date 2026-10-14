@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   LineChart, Line, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, ReferenceLine, CartesianGrid,
+  ResponsiveContainer, ReferenceLine, CartesianGrid, ComposedChart, Bar,
 } from 'recharts'
 import { supabase, hasKey } from './supabaseClient'
 import './App.css'
@@ -286,6 +286,7 @@ const TAB_GROUPS = [
     { key: 'ai', label: 'AI 사이클', emoji: '🤖' },
     { key: 'scr', label: '종목', emoji: '🔎' },
     { key: 'guru', label: '구루', emoji: '🏆' },   // 종목 바로 옆 — 같은 재무 데이터를 다른 잣대로 본다
+    { key: 'chk', label: '기업 점검', emoji: '📋' },   // 구루 다음 — 고른 뒤 분기마다 '계속 볼 만한가'를 점검
   ] },
   { key: 'mine', label: '내 투자', emoji: '🧺', tabs: [
     { key: 'pf', label: '포트폴리오', emoji: '🧺' },
@@ -309,6 +310,7 @@ function renderSection(key) {
     case 'ai': return <AISection />
     case 'scr': return <ScreenerSection />
     case 'guru': return <GuruSection />
+    case 'chk': return <CheckSection />
     case 'pf': return <PortfolioSection />
     default: return null
   }
@@ -4598,6 +4600,462 @@ function GuruSection() {
         </section>
       </StockGate>
     </>
+  )
+}
+
+// ── 기업 점검 (사업보고서 분기 점검) ──
+// fin_score.py 가 매긴 네 축 점수와 watch(관심종목)를 읽어 보여주기만 한다. 계산은 파이썬 한 곳에서 —
+// 화면과 계산이 다른 말을 하면 어느 쪽이 맞는지 확인할 수 없다(구루 화면과 같은 원칙).
+// ⚠️ CK_FLAG 의 키는 fin_score.py 가 쓰는 경고 문자열과 글자까지 같아야 한다('CB·BW 2회' → 'CB·BW').
+const CK_AXES = [
+  { key: 's_growth', name: '성장', hint: '매출·영업이익의 최근 4분기 합, 1년 전 대비' },
+  { key: 's_profit', name: '수익성', hint: 'ROIC(영업이익 ÷ 투하자본) · 영업이익률' },
+  { key: 's_cash', name: '현금', hint: 'FCF 마진((영업현금흐름 − 설비투자) ÷ 매출) · 영업현금흐름 ÷ 순이익' },
+  { key: 's_health', name: '건전성', hint: '부채비율(낮을수록) · 이자보상배율' },
+]
+const ckPct = (v) => (v == null ? '—' : (v * 100).toFixed(0) + '%')
+const ckSign = (v) => (v == null ? '—' : (v > 0 ? '+' : '') + (v * 100).toFixed(0) + '%')
+const CK_COLS = [
+  { key: 'rev_g', name: '매출성장', f: ckSign, hint: '매출 최근 4분기 합, 1년 전 대비' },
+  { key: 'op_g', name: '영업익성장', f: ckSign, hint: '영업이익 최근 4분기 합, 1년 전 대비. 적자 축소도 +로 읽힌다' },
+  { key: 'roic', name: 'ROIC', f: ckPct, hint: '영업이익 ÷ (순운전자본 + 유형자산)' },
+  { key: 'op_margin', name: '영업이익률', f: ckPct, hint: '최근 4분기 영업이익 ÷ 매출' },
+  { key: 'fcf_margin', name: 'FCF마진', f: ckPct, hint: '(영업현금흐름 − 설비투자) ÷ 매출' },
+  { key: 'cash_conv', name: '현금전환', f: (v) => (v == null ? '—' : v.toFixed(2)),
+    hint: '영업현금흐름 ÷ 순이익. 1 근처면 번 이익이 현금으로 들어온다' },
+  { key: 'debt_ratio', name: '부채비율', f: (v) => (v == null ? '—' : v.toFixed(0) + '%'), hint: '총부채 ÷ 자본. 낮을수록 안전' },
+  { key: 'int_cov', name: '이자보상', f: (v) => (v == null ? '—' : v >= 100 ? '100배+' : v.toFixed(1) + '배'),
+    hint: '영업이익 ÷ 이자지급(현금흐름표). 이자를 안 냈으면 100배+' },
+]
+// 수준: bad 빨강(존립 문제) · warn 노랑(주주 희석·현금) · info 회색(확인할 것) — 점수에는 안 들어간다
+const CK_FLAG = {
+  자본잠식: { lv: 'bad', d: '자본총계가 0 이하' },
+  계속기업: { lv: 'bad', d: '감사보고서에 계속기업 불확실성이 강조됨' },
+  부실공시: { lv: 'bad', d: '최근 1년 부도·회생·해산·채권단 관리 공시' },
+  영업정지: { lv: 'warn', d: '최근 1년 영업정지 공시 — 일부 품목·사업장만인 경우가 많아 비중은 원문에서 확인' },
+  감자: { lv: 'warn', d: '최근 1년 감자 결정 — 결손을 메우려는 경우가 많다' },
+  'CB·BW': { lv: 'warn', d: '최근 1년 전환사채·신주인수권부사채·교환사채 발행 — 주식 희석 위험' },
+  유상증자: { lv: 'warn', d: '최근 1년 유상증자 결정 — 주식 희석' },
+  FCF적자: { lv: 'warn', d: '최근 4분기 영업현금흐름이 설비투자보다 적다' },
+  이익의질: { lv: 'warn', d: '영업현금흐름이 순이익의 절반 미만 — 이익이 현금으로 안 들어온다' },
+  매출채권급증: { lv: 'info', d: '매출채권이 1년 새 매출보다 20%p 넘게 빨리 늘었다' },
+  재고급증: { lv: 'info', d: '재고가 1년 새 매출보다 20%p 넘게 빨리 늘었다' },
+  연결별도변경: { lv: 'info', d: '최근 2년 안에 연결↔별도 기준이 바뀌어 전년 비교가 어긋날 수 있다' },
+  현금흐름확인: { lv: 'info', d: 'FCF 마진이 ±60%를 넘는다 — 고객 예치금 등이 섞였을 수 있다' },
+  보고서지연: { lv: 'info', d: '다른 종목보다 2분기 넘게 뒤처진 보고서' },
+}
+const ckFlagLv = (f) => CK_FLAG[f.split(' ')[0]]?.lv || 'info'
+const CK_ST = { active: '유지', watch: '관찰', drop: '제외' }
+const CK_EV = {
+  cb: ['CB 발행', 'warn'], bw: ['BW 발행', 'warn'], eb: ['EB 발행', 'warn'], rights: ['유상증자', 'warn'],
+  reduction: ['감자', 'warn'], distress: ['부실', 'bad'], suspension: ['영업정지', 'warn'], lawsuit: ['소송', 'info'],
+  buyback: ['자사주 취득', 'good'], cancel: ['주식 소각', 'good'], cb_buyback: ['CB 재매입', 'good'],
+  bonus: ['무상증자', 'info'], buyback_sell: ['자사주 처분', 'info'], merger: ['합병·교환', 'info'],
+  split: ['분할', 'info'], asset_buy: ['자산 양수', 'info'], asset_sell: ['자산 양도', 'info'],
+}
+const dartUrl = (rno) => `https://dart.fss.or.kr/dsaf001/main.do?rcpNo=${rno}`
+// 억 단위 표기 — 적자(음수)도 같은 규칙으로. won()은 음수를 처리하지 않는다
+const ckWon = (v) => {
+  if (v == null) return '—'
+  const a = Math.abs(v), s = v < 0 ? '-' : ''
+  if (a >= 1e12) return s + (a / 1e12).toFixed(2) + '조'
+  if (a >= 1e8) return s + Math.round(a / 1e8).toLocaleString() + '억'
+  return s + Math.round(a / 1e4).toLocaleString() + '만'
+}
+const ckQ = (fq) => `${fq.slice(2, 4)}.${Math.ceil(Number(fq.slice(5, 7)) / 3)}Q`
+
+async function ckAll(table, cols, order, eq = null) {
+  let out = [], from = 0
+  for (;;) {
+    let q = supabase.from(table).select(cols)
+    if (eq) q = q.eq(eq[0], eq[1])
+    const { data, error } = await q.order(order).range(from, from + 999)
+    if (error) throw error
+    out = out.concat(data || [])
+    if (!data || data.length < 1000) return out
+    from += 1000
+  }
+}
+
+function useCheck() {
+  const [d, setD] = useState(null)
+  const [state, setState] = useState('loading')
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        const [score, watch] = await Promise.all([ckAll('fin_score', '*', 'code'), ckAll('watch', '*', 'code')])
+        if (!alive) return
+        if (!score.length) { setState('empty'); return }
+        setD({ score, watch }); setState('ok')
+      } catch (e) {
+        if (!alive) return
+        const msg = `${e?.message || ''} ${e?.code || ''}`
+        setState(/exist|find the table|PGRST205|42P01/i.test(msg) ? 'empty' : 'error')
+      }
+    })()
+    return () => { alive = false }
+  }, [])
+  return { d, state }
+}
+
+function CkFlags({ flags }) {
+  return (flags || []).map((f) => (
+    <i key={f} className={'ck-flag ' + ckFlagLv(f)} title={CK_FLAG[f.split(' ')[0]]?.d}>{f}</i>
+  ))
+}
+
+function CheckSection() {
+  const { d, state } = useCheck()
+  const [view, setView] = useState('watch')
+  const [st, setSt] = useState('전체')
+  const [fl, setFl] = useState('전체')
+  const [market, setMarket] = useState('전체')
+  const [q, setQ] = useState('')
+  const [sort, setSort] = useState({ key: 'rank', asc: true })
+  const [sel, setSel] = useState(null)
+  const detailRef = useRef(null)
+
+  const wmap = useMemo(() => Object.fromEntries((d?.watch || []).map((w) => [w.code, w])), [d])
+  const smap = useMemo(() => Object.fromEntries((d?.score || []).map((s) => [s.code, s])), [d])
+  const base = useMemo(() => {
+    if (!d) return []
+    if (view === 'all') return d.score.filter((s) => s.rank != null)
+    // 직접 추가한 종목은 점수가 없을 수도 있다(금융업 등) — 빈 행으로라도 목록에 남긴다
+    return d.watch.map((w) => smap[w.code] || { code: w.code, name: w.name, excluded: '점수 없음' })
+  }, [d, view, smap])
+  const rows = useMemo(() => {
+    const k = q.trim().toLowerCase()
+    const out = base.filter((s) => {
+      const w = wmap[s.code]
+      if (view === 'watch' && st !== '전체' && CK_ST[w?.status] !== st) return false
+      if (market !== '전체' && s.market !== market) return false
+      if (k && !(s.name?.toLowerCase().includes(k) || s.code.includes(k))) return false
+      const fs = s.flags || []
+      if (fl === '경고 없음' && fs.length) return false
+      if (fl === '경고 있음' && !fs.length) return false
+      if (fl === '빨강만' && !fs.some((f) => ckFlagLv(f) === 'bad')) return false
+      return true
+    })
+    return out.sort((a, b) => {
+      const x = a[sort.key], y = b[sort.key]
+      if (x == null) return 1                  // 결측은 정렬 방향과 무관하게 항상 뒤로
+      if (y == null) return -1
+      return sort.asc ? x - y : y - x
+    })
+  }, [base, wmap, view, st, fl, market, q, sort])
+  const click = (key) => setSort((s) => ({ key, asc: s.key === key ? !s.asc : key === 'rank' || key === 'debt_ratio' }))
+  const arrow = (key) => (sort.key === key ? (sort.asc ? ' ▲' : ' ▼') : '')
+  const pick = (code) => {
+    setSel(code)
+    setTimeout(() => detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+  }
+  const stCount = (lbl) => (d?.watch || []).filter((w) => lbl === '전체' || CK_ST[w.status] === lbl).length
+  const fq = useMemo(() => {                   // 다수 종목의 점수 기준 분기
+    const c = {}
+    for (const s of d?.score || []) if (s.fiscal_q) c[s.fiscal_q] = (c[s.fiscal_q] || 0) + 1
+    return Object.entries(c).sort((a, b) => b[1] - a[1])[0]?.[0]
+  }, [d])
+  const excluded = (d?.score || []).filter((s) => s.excluded).length
+
+  return (
+    <>
+      <header>
+        <h1>기업 점검</h1>
+        <p className="lead">
+          분기마다 나오는 <b>사업보고서의 숫자로 회사의 체력을 재고, 그 변화를 기록</b>합니다.
+          네 축(성장·수익성·현금·건전성) 점수 상위 종목을 관심종목으로 두고, 보고서가 나올 때마다
+          무엇이 바뀌었는지 점검해 <b>유지·관찰·제외</b>를 남기는 곳이에요.
+          <b> 매수 추천이 아니라 "이 기준에 걸린 회사와 그 변화의 기록"</b>입니다.
+        </p>
+      </header>
+      <StockGate state={state} need="sql/biz_check.sql 실행 + fin_hist.py · dart_events.py · fin_score.py 필요">
+        <section className="card">
+          <h2>📐 점수 읽는 법</h2>
+          <div className="ck-axes">
+            {CK_AXES.map((a) => (
+              <div key={a.key} className="ck-axbox"><b>{a.name}</b><span>{a.hint}</span></div>
+            ))}
+          </div>
+          <p className="note">
+            각 축은 <b>코스피·코스닥 보통주(시총 500억·하루 거래대금 5억 이상, 금융업 제외)</b> 안에서
+            0~100 백분위로 매기고, 네 축을 평균한 게 점수예요. 상장 2년이 안 돼 성장률이 없는 종목은
+            그 축을 50(중간)으로 둡니다 — 빈 칸이 점수를 올리지 않게요.
+            <br /><b>관심종목 = 점수 상위 180 + 직접 넣는 20자리.</b> 한번 들어오면 <b>'제외' 판정 전까지 남습니다</b> —
+            점수가 분기마다 출렁여도 목록이 들락날락하지 않게.
+          </p>
+          <p className="note">
+            <b>경고 표시는 점수에 넣지 않습니다</b> — 점수는 "얼마나 좋은가", 경고는 "무엇을 확인할 것인가"예요.
+            <br />
+            {Object.entries(CK_FLAG).map(([k, v]) => (
+              <span key={k} className="ck-legend"><i className={'ck-flag ' + v.lv}>{k}</i>{v.d}</span>
+            ))}
+          </p>
+          <p className="note owarn-inline">
+            ⚠️ <b>백분위는 업종을 가리지 않습니다.</b> 영업이익률이 원래 낮은 유통, 선수금 때문에 부채비율이 원래
+            높은 조선·건설은 구조적으로 불리해요(채점 947종목 중 소매 15개는 상위 180에 0개, 건설 20개는 3개).
+            재무는 <b>분기말 +45일(사업보고서 +90일)</b>에야 공시되고, 이 화면은 <b>매주 토요일</b> 갱신됩니다.
+          </p>
+        </section>
+
+        {sel && (
+          <div ref={detailRef}>
+            <CheckDetail key={sel} s={smap[sel] || { code: sel, name: wmap[sel]?.name }} w={wmap[sel]}
+              onClose={() => setSel(null)} />
+          </div>
+        )}
+
+        <section className="card">
+          <div className="seg">
+            <button className={view === 'watch' ? 'on' : ''} onClick={() => setView('watch')}>
+              📋 관심종목 {d?.watch.length || 0}</button>
+            <button className={view === 'all' ? 'on' : ''} onClick={() => setView('all')}>
+              전체 채점 {(d?.score || []).filter((s) => s.rank != null).length}</button>
+          </div>
+          {view === 'watch' && (
+            <div className="seg">
+              {['전체', '유지', '관찰', '제외'].map((x) => (
+                <button key={x} className={st === x ? 'on' : ''} onClick={() => setSt(x)}>{x} {stCount(x)}</button>
+              ))}
+            </div>
+          )}
+          <div className="seg">
+            {['전체', '경고 없음', '경고 있음', '빨강만'].map((x) => (
+              <button key={x} className={fl === x ? 'on' : ''} onClick={() => setFl(x)}>{x}</button>
+            ))}
+            {['전체', 'KOSPI', 'KOSDAQ'].map((m) => (
+              <button key={'m' + m} className={market === m ? 'on' : ''} onClick={() => setMarket(m)}>
+                {m === '전체' ? '시장 전체' : m}</button>
+            ))}
+            <input className="scr-q" placeholder="종목명·코드 검색" value={q} onChange={(e) => setQ(e.target.value)} />
+          </div>
+          <p className="note">
+            {rows.length}종목 · 행을 누르면 위에 분기 추이·공시 사건·점검 기록이 열려요 · 열 제목을 누르면 정렬
+            {fq && <> · 점수 기준 분기 <b>{fq}</b></>}
+            {view === 'all' && excluded > 0 && <> · 이력이 짧아 채점에서 빠진 {excluded}종목</>}
+          </p>
+          <div className="scr-wrap">
+            <table className="stats scr ck-tbl">
+              <thead>
+                <tr>
+                  <th onClick={() => click('rank')}>#{arrow('rank')}</th>
+                  <th>종목</th>
+                  <th onClick={() => click('score')}>점수{arrow('score')}</th>
+                  {CK_AXES.map((a) => (
+                    <th key={a.key} onClick={() => click(a.key)} title={a.hint}>{a.name}{arrow(a.key)}</th>
+                  ))}
+                  {CK_COLS.map((c) => (
+                    <th key={c.key} onClick={() => click(c.key)} title={c.hint}>{c.name}{arrow(c.key)}</th>
+                  ))}
+                  <th>경고</th>
+                  {view === 'watch' && <th>상태</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.slice(0, 200).map((s) => (
+                  <tr key={s.code} className={sel === s.code ? 'ck-sel' : ''} onClick={() => pick(s.code)}>
+                    <td className="gr">{s.rank ?? '—'}</td>
+                    <td className="scr-name">
+                      <b>{s.name}</b>
+                      <span>{s.code} · {MK_KO[s.market] || s.market || '—'} · {won(s.mktcap)}
+                        {s.fiscal_q && <em className={fq && s.fiscal_q < fq ? 'stale' : fq && s.fiscal_q > fq ? 'fresh' : 'same'}>
+                          재무 {s.fiscal_q}</em>}
+                        {s.excluded && <em className="stale">{s.excluded}</em>}
+                      </span>
+                    </td>
+                    <td className="gscore">{s.score == null ? '—' : s.score.toFixed(1)}</td>
+                    {CK_AXES.map((a) => (
+                      <td key={a.key} className="ck-ax">
+                        {s[a.key] == null ? '—' : <><div className="bar"><i style={{ width: s[a.key] + '%' }} /></div>
+                          <span>{s[a.key].toFixed(0)}</span></>}
+                      </td>
+                    ))}
+                    {CK_COLS.map((c) => <td key={c.key}>{c.f(s[c.key])}</td>)}
+                    <td className="ck-flags"><CkFlags flags={s.flags} /></td>
+                    {view === 'watch' && <td>{CK_ST[wmap[s.code]?.status] || '—'}</td>}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {rows.length > 200 && <p className="note">200종목까지만 표시 중 — 필터나 검색으로 좁혀보세요.</p>}
+        </section>
+      </StockGate>
+    </>
+  )
+}
+
+// 종목 상세 — 분기 추이(3개월 값), 공시 사건, 감사의견, 점검 기록. 열릴 때 그 종목 것만 읽는다.
+function CheckDetail({ s, w, onClose }) {
+  const [x, setX] = useState(null)
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        const [qs, ev, rv] = await Promise.all([
+          ckAll('fin_q3m', '*', 'fiscal_q', ['code', s.code]),
+          ckAll('dart_event', 'rcept_no,rcept_dt,kind,report_nm,detail', 'rcept_dt', ['code', s.code]),
+          ckAll('review', '*', 'fiscal_q', ['code', s.code]),
+        ])
+        if (alive) setX({ qs, ev: ev.reverse(), rv: rv.reverse() })
+      } catch {
+        if (alive) setX({ err: true })
+      }
+    })()
+    return () => { alive = false }
+  }, [s.code])
+
+  const chart = (x?.qs || []).map((r) => ({
+    q: ckQ(r.fiscal_q),
+    rev: r.revenue == null ? null : r.revenue / 1e8,
+    op: r.op_income == null ? null : r.op_income / 1e8,
+    margin: r.revenue && r.op_income != null ? (r.op_income / r.revenue) * 100 : null,
+    ocf: r.ocf == null ? null : r.ocf / 1e8,
+    fcf: r.ocf == null || r.capex == null ? null : (r.ocf - r.capex) / 1e8,
+  }))
+  const eok = (v) => (Math.abs(v) >= 1e4 ? (v / 1e4).toFixed(1) + '조' : Math.round(v).toLocaleString() + '억')
+  const audit = (x?.ev || []).find((e) => e.kind === 'audit')
+  const events = (x?.ev || []).filter((e) => e.kind !== 'audit' && !(e.report_nm || '').startsWith('['))
+  const last = x?.qs?.length ? x.qs[x.qs.length - 1] : null
+
+  return (
+    <section className="card ck-detail">
+      <div className="ck-head">
+        <h2>{s.name}</h2>
+        <span className="note">{s.code} · {MK_KO[s.market] || s.market || '—'} · 시총 {won(s.mktcap)}
+          {s.rank != null && <> · <b>{s.rank}위</b> 점수 <b>{s.score?.toFixed(1)}</b></>}
+          {w && <> · 관심종목 <b>{CK_ST[w.status]}</b>{w.added_at && ` (${w.added_at}부터)`}</>}</span>
+        <button className="ck-close" onClick={onClose} aria-label="닫기">✕</button>
+      </div>
+      {s.score != null && (
+        <div className="ck-axes">
+          {CK_AXES.map((a) => (
+            <div key={a.key} className="ck-axbox">
+              <b>{s[a.key] == null ? '—' : s[a.key].toFixed(0)}</b><em>{a.name}</em>
+              <div className="bar"><i style={{ width: (s[a.key] || 0) + '%' }} /></div>
+            </div>
+          ))}
+        </div>
+      )}
+      {(s.flags || []).length > 0 && (
+        <p className="note">{(s.flags || []).map((f) => (
+          <span key={f} className="ck-legend"><i className={'ck-flag ' + ckFlagLv(f)}>{f}</i>{CK_FLAG[f.split(' ')[0]]?.d}</span>
+        ))}</p>
+      )}
+
+      {!x ? <div className="col-msg">불러오는 중…</div> : x.err ? <div className="col-msg">불러오지 못했어요</div> : (
+        <>
+          <h3 className="ck-h3">분기 매출·영업이익 <small>(3개월 값, 억원 · 선 = 영업이익률)</small></h3>
+          <div className="ck-chart">
+            <ResponsiveContainer width="100%" height={210}>
+              <ComposedChart data={chart} margin={{ top: 6, right: 4, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
+                <XAxis dataKey="q" tick={{ fontSize: 10 }} />
+                <YAxis yAxisId="w" tick={{ fontSize: 10 }} tickFormatter={eok} width={52} />
+                <YAxis yAxisId="p" orientation="right" tick={{ fontSize: 10 }} tickFormatter={(v) => v.toFixed(0) + '%'} width={36} />
+                <Tooltip formatter={(v, n) => (v == null ? '—' : n === '영업이익률' ? v.toFixed(1) + '%' : eok(v))} />
+                <ReferenceLine yAxisId="w" y={0} stroke="#94a3b8" />
+                <Bar yAxisId="w" dataKey="rev" name="매출" fill="#cbd5e1" />
+                <Bar yAxisId="w" dataKey="op" name="영업이익" fill="#d97706" />
+                <Line yAxisId="p" dataKey="margin" name="영업이익률" stroke="#7c3aed" dot={false} strokeWidth={2} connectNulls />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+          <h3 className="ck-h3">분기 현금흐름 <small>(억원 · FCF = 영업현금흐름 − 설비투자)</small></h3>
+          <div className="ck-chart">
+            <ResponsiveContainer width="100%" height={170}>
+              <ComposedChart data={chart} margin={{ top: 6, right: 40, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--line)" vertical={false} />
+                <XAxis dataKey="q" tick={{ fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 10 }} tickFormatter={eok} width={52} />
+                <Tooltip formatter={(v) => (v == null ? '—' : eok(v))} />
+                <ReferenceLine y={0} stroke="#94a3b8" />
+                <Bar dataKey="ocf" name="영업현금흐름" fill="#93c5fd" />
+                <Bar dataKey="fcf" name="FCF" fill="#0f766e" />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+          <p className="note">
+            보고서는 손익을 <b>연초부터 누적</b>으로, 현금흐름표는 <b>누적만</b> 줍니다. 위 값은 직전 분기 누적을 뺀
+            3개월 값이에요. 직전 분기가 비었거나 연결↔별도가 바뀐 분기는 빈칸으로 둡니다(엉뚱한 뺄셈을 막으려고).
+          </p>
+
+          <div className="scr-wrap">
+            <table className="stats scr ck-qt">
+              <thead>
+                <tr><th>분기</th><th>매출</th><th>영업이익</th><th>이익률</th><th>영업CF</th><th>FCF</th>
+                  <th>부채비율</th><th>현금</th><th>기준</th><th>원문</th></tr>
+              </thead>
+              <tbody>
+                {[...(x.qs || [])].reverse().map((r) => (
+                  <tr key={r.fiscal_q}>
+                    <td>{ckQ(r.fiscal_q)}</td>
+                    <td>{ckWon(r.revenue)}</td>
+                    <td>{ckWon(r.op_income)}</td>
+                    <td>{r.revenue && r.op_income != null ? ((r.op_income / r.revenue) * 100).toFixed(1) + '%' : '—'}</td>
+                    <td>{ckWon(r.ocf)}</td>
+                    <td>{r.ocf == null || r.capex == null ? '—' : ckWon(r.ocf - r.capex)}</td>
+                    <td>{r.liabilities != null && r.equity > 0 ? ((r.liabilities / r.equity) * 100).toFixed(0) + '%' : '—'}</td>
+                    <td>{ckWon(r.cash)}</td>
+                    <td>{r.fs_div === 'CFS' ? '연결' : r.fs_div === 'OFS' ? '별도' : '—'}</td>
+                    <td>{r.rcept_no ? <a href={dartUrl(r.rcept_no)} target="_blank" rel="noreferrer">{r.rcept_dt}</a> : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <h3 className="ck-h3">공시 사건 <small>(주요사항보고 · 정정공시는 뺌)</small></h3>
+          {events.length === 0 ? <p className="note">최근 1년 주요사항보고가 없어요.</p> : (
+            <ul className="ck-ev">
+              {events.slice(0, 30).map((e) => (
+                <li key={e.rcept_no}>
+                  <time>{e.rcept_dt}</time>
+                  <i className={'ck-flag ' + (CK_EV[e.kind]?.[1] || 'info')}>{CK_EV[e.kind]?.[0] || e.kind}</i>
+                  <a href={dartUrl(e.rcept_no)} target="_blank" rel="noreferrer">{e.report_nm}</a>
+                </li>
+              ))}
+            </ul>
+          )}
+          {audit && (
+            <p className="note">
+              🧾 <b>감사의견 {audit.detail?.year}</b>: {audit.detail?.opinion || '응답에 의견 칸이 비어 있음'}
+              {' · '}감사인 {audit.detail?.auditor || '—'}
+              {audit.detail?.auditor_changed && <> (전기 {audit.detail.prev_auditor}에서 교체 — 지정제로 흔한 일)</>}
+              {audit.detail?.going_concern && <> · <i className="ck-flag bad">계속기업 불확실성</i></>}
+            </p>
+          )}
+
+          <h3 className="ck-h3">점검 기록</h3>
+          {(w?.thesis || w?.kpi || w?.kill || w?.memo) && (
+            <dl className="ck-thesis">
+              {w.thesis && <><dt>보는 이유</dt><dd>{w.thesis}</dd></>}
+              {w.kpi && <><dt>핵심 지표</dt><dd>{w.kpi}</dd></>}
+              {w.kill && <><dt>깨지는 조건</dt><dd>{w.kill}</dd></>}
+              {w.memo && <><dt>메모</dt><dd>{w.memo}</dd></>}
+            </dl>
+          )}
+          {(x.rv || []).length === 0 ? (
+            <p className="note">
+              아직 점검 기록이 없어요. <b>첫 점검은 3분기 보고서(마감 11/14)부터</b> — 바뀐 숫자·공시와 본문 요약을 보고
+              유지·관찰·제외를 남기게 됩니다.
+              {last && <> 지금 이 종목의 최신 보고서는 <b>{ckQ(last.fiscal_q)}</b>({last.rcept_dt} 공시)예요.</>}
+            </p>
+          ) : (
+            <ul className="ck-rv">
+              {x.rv.map((r) => (
+                <li key={r.fiscal_q}>
+                  <b>{ckQ(r.fiscal_q)}</b> <i className={'ck-flag ' + (r.verdict === 'drop' ? 'bad' : r.verdict === 'watch' ? 'warn' : 'good')}>
+                    {CK_ST[{ keep: 'active', watch: 'watch', drop: 'drop' }[r.verdict]] || r.verdict || '판정 전'}</i>
+                  {r.summary && <p>{r.summary}</p>}
+                  {r.memo && <p className="note">📝 {r.memo}</p>}
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </section>
   )
 }
 

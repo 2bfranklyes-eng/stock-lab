@@ -34,7 +34,7 @@ SCORE_SLOTS = 180          # 점수로 채우는 자리. 직접 추가(manual)�
 STALE_Q = 2                # 최신 분기보다 2분기 넘게 뒤처진 보고서는 '지연' 표시
 # 최근 1년 공시 사건 → 경고 표시 (dart_events.py 가 모은다). 자사주·무상증자처럼 경고가 아닌 건 뺀다.
 EVENT_FLAG = {"cb": "CB·BW", "bw": "CB·BW", "eb": "CB·BW", "rights": "유상증자",
-              "reduction": "감자", "distress": "부실공시"}
+              "reduction": "감자", "distress": "부실공시", "suspension": "영업정지"}
 
 
 def load(table, cols, **eq):
