@@ -270,7 +270,14 @@ def pit_backfill(start_ym="201501"):
     if not KEY:
         print("[KR] KRX_API_KEY 없음 — PIT 백필 불가")
         return
-    done = set()
+    # DB 밖으로 옮긴 달(archive.py)도 '이미 있음'이다 — 다시 받으면 DB가 도로 54MB 찬다.
+    # 보관 파일을 못 읽으면 어느 달이 있는지 모르므로 백필하지 않고 멈춘다.
+    try:
+        import archive
+        done = archive.pit_archived_months()
+    except Exception as e:
+        print(f"[KR] 보관 파일(archive.py) 확인 실패 — 백필 중단: {e}")
+        return
     off = 0
     while True:                                   # 이미 채운 달 목록
         r = sb.table("pit_monthly").select("ym").order("ym").range(off, off + 999).execute().data

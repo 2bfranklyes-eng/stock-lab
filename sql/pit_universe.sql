@@ -37,6 +37,8 @@ alter table pit_daily enable row level security;
 -- ── 월말 스냅샷 (영구) ──
 -- 한 번 기록되면 지우지 않는다 — 그래야 상장폐지된 종목이 그 시점 기록으로 남는다.
 -- 이게 point-in-time의 전부다.
+-- ⚠️ 2026-10-14: DB 용량(476/500MB) 때문에 2015-01~2026-09 를 archive.py 로 DB 밖에 보관하고
+--    TRUNCATE 했다(지운 게 아니라 옮긴 것 — Storage 'archive/pit_monthly.csv.gz'). DB 에는 그 뒤 달만 쌓인다.
 create table if not exists pit_monthly (
   code     text not null,
   ym       text not null,   -- 'YYYY-MM'

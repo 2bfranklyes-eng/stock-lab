@@ -65,7 +65,13 @@ NQ = 10                             # 10분위
 
 def fetch_pit():
     """pit_monthly — 매 시점 실제 상장돼 있던 전 종목의 월말 스냅샷(상장폐지 종목 포함).
-    stock_daily를 쓰던 초판은 생존 편향으로 소형주 팩터가 +74%/년까지 부풀었다."""
+    stock_daily를 쓰던 초판은 생존 편향으로 소형주 팩터가 +74%/년까지 부풀었다.
+
+    2015-01~2026-09 는 DB 용량 때문에 보관 파일로 옮겼다(archive.py). DB 에는 그 뒤 달만
+    쌓이므로 둘을 합친다 — 겹치는 달이 생기면 DB(나중 값)를 쓴다."""
+    import archive
+    old = archive.load_pit_archive()
+    print(f"  보관 파일 {len(old):,}행 ({old.ym.min()} ~ {old.ym.max()})")
     rows, off, t0 = [], 0, time.time()
     while True:
         d = (sb.table("pit_monthly")
@@ -77,7 +83,9 @@ def fetch_pit():
             print(f"  {len(rows):,}행 ({time.time()-t0:.0f}초)", flush=True)
         if len(d) < 1000:
             break
-    df = pd.DataFrame(rows)
+    new = pd.DataFrame(rows, columns=old.columns)
+    df = (pd.concat([old, new], ignore_index=True)
+          .drop_duplicates(["code", "ym"], keep="last").reset_index(drop=True))
     df["ym"] = pd.PeriodIndex(df["ym"], freq="M")
     return df
 

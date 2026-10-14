@@ -20,6 +20,9 @@ flowcap_cache.pkl
 # 유튜브 자막 등 외부 텍스트 — 검토용으로만 두고 저장소엔 올리지 않는다(저작권)
 *.txt
 
+# archive.py 보관 파일 — 원본은 Supabase Storage 'archive' 버킷, 여긴 로컬 사본
+archive/
+
 # dart.py 로컬 캐시(corpCode 3.5MB) — 매 실행마다 다시 받으면 DART가 IP를 막는다
 .cache/
 guru_dry.csv
