@@ -40,6 +40,7 @@ For EACH packet, write one JSON file to C:\Users\user\stock-lab\.cache\summaries
 Rules:
 - Every number must come from the packet text (or a simple subtraction/division of packet numbers, which you should label as such). Never invent or estimate. If unsure, use null.
 - backlog only for an ONGOING order-backlog (수주상황/수주잔고) table; a single completed contract or a revenue-recognition table is not a backlog → null. Many companies have none → null. Totals row (합계) preferred. Delivered amounts shown in parentheses or negative should be stored as positive.
+- Never back-calculate a missing begin/new/delivered value from the identity itself (e.g. begin = end − new + delivered) — that makes the check circular. Leave it null and set identity_ok to null.
 - Neutral, factual tone. No investment advice, no buy/sell language, no price targets, no speculation beyond the text.
 - Keep summary lines short (under ~120 Korean characters each).
 
