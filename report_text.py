@@ -152,11 +152,25 @@ def packet(code, fq):
     return "\n".join(out), None
 
 
+def todo(fq, n):
+    """아직 AI 요약이 없는 관심종목(제외 빼고)을 점수 순위대로 n개. 그 분기 보고서가 있는 종목만."""
+    from fin_score import load
+    rank = {r["code"]: r["rank"] or 9999 for r in load("fin_score", "code,rank")}
+    done = {r["code"] for r in load("review", "code,summary", fiscal_q=fq) if r.get("summary")}
+    has = {r["code"] for r in load("fin_q", "code", fiscal_q=fq)}
+    w = [x["code"] for x in load("watch", "code,status") if x["status"] != "drop"]
+    return sorted([c for c in w if c not in done and c in has], key=lambda c: rank.get(c, 9999))[:n]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fq", required=True)
-    ap.add_argument("codes", nargs="+")
+    ap.add_argument("--todo", type=int, default=0, help="요약이 아직 없는 관심종목을 순위대로 n개")
+    ap.add_argument("codes", nargs="*")
     a = ap.parse_args()
+    if a.todo:
+        a.codes = todo(a.fq, a.todo)
+        print("대상:", " ".join(a.codes))
     d = os.path.join(PACK, a.fq)
     os.makedirs(d, exist_ok=True)
     for code in a.codes:

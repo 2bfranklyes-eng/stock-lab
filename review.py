@@ -12,6 +12,8 @@
 #
 # 자동 체크는 '확인할 것'을 고르는 일이지 판정이 아니다. fail 이 떠도 판정은 사람이 한다.
 import argparse
+import os
+import re
 import glob
 import json
 import sys
@@ -239,16 +241,53 @@ def cmd_checks(a):
     print(f"자동 체크 {n}종목 · " + " · ".join(f"{k} {v}" for k, v in tally.items()))
 
 
+def check_summary(j, code):
+    """AI 요약 JSON 검증 — 에이전트의 '검증했다'는 자기 보고만 믿지 않는다. 문제 목록(빈 목록이면 통과)과 경고."""
+    errs, warns = [], []
+    if j.get("code") != code or not j.get("fiscal_q"):
+        errs.append("code/fiscal_q")
+    lines = [l for l in (j.get("summary") or "").split("\n") if l.strip()]
+    if not (1 <= len(lines) <= 6) or any(not l.startswith("• ") for l in lines):
+        errs.append(f"요약 줄 형식({len(lines)}줄)")
+    if len(lines) > 1 and any(not re.search(r"\((II\.\d|IV|XI\.4)[^)]*\)\s*$", l) for l in lines):
+        errs.append("근거 절 표시 누락")
+    b = (j.get("extracted") or {}).get("backlog")
+    if b:
+        c = b.get("cur") or {}
+        vals = [c.get(k) for k in ("begin", "new", "delivered", "end")]
+        if None not in vals:
+            ok = abs(vals[0] + vals[1] - vals[2] - vals[3]) <= max(1, abs(vals[3]) * 0.001)
+            if ok != b.get("identity_ok"):
+                errs.append(f"수주 등식 판정 불일치(계산 {ok}, 기록 {b.get('identity_ok')})")
+        elif b.get("identity_ok") is True:
+            # 기초+신규가 합쳐진 표(HD현대일렉트릭)는 합친 값으로 맞을 수 있다 — 막지 않고 표시만
+            warns.append("칸이 비었는데 등식 맞음 — basis 의 합산 값으로 확인했는지 볼 것")
+    return errs, warns
+
+
 def cmd_load(a):
     files = sorted(glob.glob(f"{a.dir}/*.json"))
-    n = 0
+    n, bad = 0, []
     for p in files:
-        j = json.load(open(p, encoding="utf-8"))
+        code = os.path.basename(p)[:6]
+        try:
+            j = json.load(open(p, encoding="utf-8"))
+        except ValueError as e:
+            bad.append(f"{code} JSON 오류 {e}")
+            continue
+        errs, warns = check_summary(j, code)
+        if errs:
+            bad.append(f"{code} {', '.join(errs)}")
+            continue
+        for w in warns:
+            print(f"  ⚠️ {code}: {w}")
         row = {"code": j["code"], "fiscal_q": j["fiscal_q"], "summary": j.get("summary"),
                "extracted": j.get("extracted")}
         sb.table("review").upsert(row, on_conflict="code,fiscal_q").execute()
         n += 1
-    print(f"AI 요약 {n}건 적재")
+    print(f"AI 요약 {n}건 적재" + (f" · 거부 {len(bad)}건" if bad else ""))
+    for x in bad:
+        print("  ✕", x)
 
 
 def main():
