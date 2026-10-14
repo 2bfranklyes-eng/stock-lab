@@ -4885,6 +4885,67 @@ function CheckSection() {
   )
 }
 
+// 점검 기록 한 장 — 자동 체크(review.py) · AI 요약과 추출 숫자(report_text.py → 요약) · 판정·메모(사람)
+const CK_RES = { fail: ['✕', 'bad'], warn: ['△', 'warn'], info: ['·', 'info'], pass: ['✓', 'good'] }
+const CK_VD = { keep: ['유지', 'good'], watch: ['관찰', 'warn'], drop: ['제외', 'bad'] }
+// 보고서 표의 단위 → 원. 단위를 모르면 숫자를 그대로 둔다(틀린 환산보다 낫다)
+const ckUnit = (u) => (/백만/.test(u || '') ? 1e6 : /억/.test(u || '') ? 1e8 : /천/.test(u || '') ? 1e3 : /원/.test(u || '') ? 1 : null)
+function CkReview({ r }) {
+  const ck = r.checks || []
+  const issues = ck.filter((c) => c.result !== 'pass')
+  const passes = ck.filter((c) => c.result === 'pass')
+  const e = r.extracted || {}
+  const b = e.backlog
+  const mul = b ? ckUnit(b.unit) : null
+  const bw = (v) => (v == null ? '—' : mul ? ckWon(v * mul) : `${Number(v).toLocaleString()} ${b.unit || ''}`)
+  const vd = CK_VD[r.verdict]
+  return (
+    <li>
+      <div className="ck-rvhead">
+        <b>{ckQ(r.fiscal_q)} 점검</b>
+        <i className={'ck-flag ' + (vd ? vd[1] : 'info')}>{vd ? vd[0] : '판정 전'}</i>
+        {r.rcept_no && <a href={dartUrl(r.rcept_no)} target="_blank" rel="noreferrer">보고서 원문</a>}
+      </div>
+      {issues.length > 0 && (
+        <div className="ck-checks">
+          {issues.map((c, i) => (
+            <span key={i} className={'ck-flag ' + CK_RES[c.result][1]}>
+              {CK_RES[c.result][0]} {c.rule} <b>{c.value}</b>{c.note ? ` · ${c.note}` : ''}</span>
+          ))}
+        </div>
+      )}
+      {passes.length > 0 && (
+        <p className="note">✓ 통과 {passes.length}: {passes.map((c) => `${c.rule.replace(/\(.*\)/, '')} ${c.value}`).join(' · ')}</p>
+      )}
+      {r.summary && (
+        <div className="ck-sum">
+          <em>🤖 AI 요약 — 전 분기 보고서 대비 바뀐 점. 괄호 안이 근거 절이니 중요한 건 원문으로 확인하세요.</em>
+          {r.summary.split('\n').filter(Boolean).map((l, i) => <p key={i}>{l}</p>)}
+        </div>
+      )}
+      {b && (
+        <p className="note">
+          📦 <b>수주잔고 {bw(b.cur?.end)}</b> (직전 {bw(b.prev?.end)}
+          {b.cur?.end != null && b.prev?.end ? `, ${((b.cur.end / b.prev.end - 1) * 100).toFixed(1)}%` : ''})
+          {b.quarter_new_orders != null && <> · 이번 분기 신규수주 {bw(b.quarter_new_orders)}</>}
+          {/* 세 갈래 — 표에 기초·신규·납품 칸이 없는 회사(삼성중공업: 총계약액/기납품/잔고)는 '불일치'가 아니라
+              '검증 불가'다. 둘을 같은 ✕로 보이면 멀쩡한 숫자가 틀린 것처럼 읽힌다 */}
+          {' · '}{b.identity_ok === true ? '✓ 기초+신규−납품=기말 맞음'
+            : b.identity_ok === false ? '✕ 기초+신규−납품≠기말 — 원문 확인' : '표 형식상 등식 검증 불가'}
+          {b.note && <> · {b.note}</>}
+        </p>
+      )}
+      {(e.segments || []).length > 0 && (
+        <p className="note">🧩 매출 비중: {e.segments.map((s) => `${s.name} ${s.cur_share_pct ?? '—'}%`
+          + (s.prev_share_pct != null ? `(직전 ${s.prev_share_pct}%)` : '')).join(' · ')}</p>
+      )}
+      {e.kpi && <p className="note">🎯 핵심 지표 제안: {e.kpi}</p>}
+      {(e.watch_points || []).length > 0 && <p className="note">🔭 다음 분기 확인: {e.watch_points.join(' · ')}</p>}
+      {r.memo && <p className="note">📝 {r.memo}</p>}
+    </li>
+  )
+}
+
 // 종목 상세 — 분기 추이(3개월 값), 공시 사건, 감사의견, 점검 기록. 열릴 때 그 종목 것만 읽는다.
 function CheckDetail({ s, w, onClose }) {
   const [x, setX] = useState(null)
@@ -5043,14 +5104,7 @@ function CheckDetail({ s, w, onClose }) {
             </p>
           ) : (
             <ul className="ck-rv">
-              {x.rv.map((r) => (
-                <li key={r.fiscal_q}>
-                  <b>{ckQ(r.fiscal_q)}</b> <i className={'ck-flag ' + (r.verdict === 'drop' ? 'bad' : r.verdict === 'watch' ? 'warn' : 'good')}>
-                    {CK_ST[{ keep: 'active', watch: 'watch', drop: 'drop' }[r.verdict]] || r.verdict || '판정 전'}</i>
-                  {r.summary && <p>{r.summary}</p>}
-                  {r.memo && <p className="note">📝 {r.memo}</p>}
-                </li>
-              ))}
+              {x.rv.map((r) => <CkReview key={r.fiscal_q} r={r} />)}
             </ul>
           )}
         </>

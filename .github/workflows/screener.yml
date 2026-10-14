@@ -48,3 +48,5 @@ jobs:
       - run: python dart_events.py   # 주요사항보고(CB·유상증자 …) 최근 14일 + 새 사업보고서 감사의견
         continue-on-error: true
       - run: python fin_score.py     # 네 축 점수 → fin_score, 관심종목(watch) 빈자리 채우기
+      # 관심종목 최신 분기 숫자 자동 체크 → review.checks. 요약(AI)·판정(사람)은 건드리지 않는다
+      - run: python review.py checks

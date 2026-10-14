@@ -558,3 +558,10 @@ table.stats tr.base td { color: #94a3b8; border-top: 2px solid var(--line); bord
   .ck-axbox b, .ck-h3 { color: #e2e8f0; }
   .ck-axbox span, .ck-axbox em, .ck-thesis dt { color: #94a3b8; }
 }
+.ck-rvhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+.ck-rvhead a { font-size: 11.5px; color: #64748b; }
+.ck-checks { display: flex; flex-wrap: wrap; gap: 2px; margin: 6px 0 0; }
+.ck-checks .ck-flag { white-space: normal; font-size: 10.5px; padding: 2px 8px; }
+.ck-sum { margin: 8px 0 0; padding: 8px 11px; border-radius: 10px; background: var(--track); font-size: 12.5px; }
+.ck-sum em { display: block; font-style: normal; font-size: 10.5px; color: #64748b; margin-bottom: 4px; }
+.ck-sum p { margin: 2px 0; line-height: 1.7; }
