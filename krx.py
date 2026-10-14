@@ -167,24 +167,8 @@ def num(v):
         return None
 
 
-PIT_KEEP_DAYS = 45               # 일별 버퍼 보관일 — 한 달 집계에 필요한 만큼만(용량 14MB 고정)
-
-
-def pit_flush(rows):
-    """전 종목 일별을 버퍼에 upsert. 실패해도 본 적재를 되돌리지 않는다 —
-    point-in-time은 부가 기능이라, 여기서 죽으면 매물대·지표가 통째로 멈춘다."""
-    if not rows:
-        return
-    try:
-        for i in range(0, len(rows), 1000):
-            sb.table("pit_daily").upsert(rows[i:i + 1000], on_conflict="code,dt").execute()
-        print(f"[KR] pit_daily {len(rows):,}행 (전 종목 {len({r['code'] for r in rows})}개)")
-    except Exception as e:
-        print(f"[KR] pit_daily 적재 실패 — 건너뜀: {e}")
-
-
 def pit_aggregate(rows, skip_ym=None):
-    """일별 행들 → 월말 스냅샷 행들. 버퍼 롤업과 과거 백필이 같은 로직을 쓴다.
+    """일별 행들 → 월말 스냅샷 행들. 매달 재조회(pit_catchup)와 과거 백필이 같은 로직을 쓴다.
 
     변동성은 그달 안의 일간 수익률 표준편차다. 한국 주식은 일일 가격제한폭이 ±30%라
     |수익률| > 31%면 액면분할·병합 같은 코퍼릿 액션이므로 그 하루만 뺀다
@@ -220,26 +204,37 @@ def pit_put(rows):
         sb.table("pit_monthly").upsert(rows[i:i + 1000], on_conflict="code,ym").execute()
 
 
-def pit_rollup(today):
-    """버퍼에서 '이미 끝난 달'을 월말 스냅샷으로 넘기고, 오래된 버퍼를 지운다."""
+def pit_catchup(today):
+    """지난달 월말 스냅샷이 pit_monthly 에 없으면, 그 달 전체를 KRX 에서 다시 받아 집계한다.
+
+    예전엔 매일 받은 전 종목을 pit_daily(45일 버퍼)에 쌓았다가 달이 끝나면 넘겼다. 그런데
+    매일 넣고 지우는 버퍼라 빈자리까지 합쳐 DB 를 수십 MB 차지했다(2026-10, 한도 476/500MB).
+    KRX 일별매매정보는 과거 날짜를 물어도 그 시점 전 종목을 돌려주므로(pit_backfill 참고)
+    달이 끝난 뒤 한 번에 받아도 결과가 같다 — 2026-09 를 두 경로로 만들어 2,773종목 × 8개
+    값이 전부 일치함을 확인했다. 대가는 한 달에 한 번 ~44콜.
+
+    실패하면 아무것도 쓰지 않는다 — 그 달 행이 없으니 다음 실행이 다시 시도한다.
+    point-in-time은 부가 기능이라, 여기서 죽어도 매물대·지표 적재는 계속된다."""
+    first = today.replace(day=1)
+    prev = first - timedelta(days=1)
+    ym = prev.strftime("%Y-%m")
     try:
-        rows, off = [], 0
-        while True:
-            r = (sb.table("pit_daily").select("code,dt,market,name,close,tval,shares,mktcap")
-                 .order("code").order("dt").range(off, off + 999).execute().data)
-            rows += r
-            off += 1000
-            if len(r) < 1000:
-                break
-        out = pit_aggregate(rows, skip_ym=today.strftime("%Y-%m")) if rows else []
-        if out:
-            pit_put(out)
-            print(f"[KR] pit_monthly {len(out):,}행 집계 "
-                  f"({', '.join(sorted({r['ym'] for r in out}))})")
-        cut = (today - timedelta(days=PIT_KEEP_DAYS)).isoformat()
-        sb.table("pit_daily").delete().lt("dt", cut).execute()
+        if sb.table("pit_monthly").select("ym").eq("ym", ym).limit(1).execute().data:
+            return
+        rows, d = [], prev.replace(day=1)
+        while d < first:
+            if d.weekday() < 5:
+                rows += pit_day(d.strftime("%Y%m%d"))
+            d += timedelta(days=1)
+        days = len({r["dt"] for r in rows})
+        if days < 15:                        # 명절이 낀 달도 17일은 넘는다 — 적으면 응답이 빠진 것
+            print(f"[KR] pit_monthly {ym}: 거래일 {days}일뿐 — 응답 누락 의심, 다음 실행에서 재시도")
+            return
+        out = pit_aggregate(rows)
+        pit_put(out)
+        print(f"[KR] pit_monthly {ym}: {len(out):,}종목 집계 (거래일 {days}일 재조회)")
     except Exception as e:
-        print(f"[KR] pit 집계 실패 — 건너뜀: {e}")
+        print(f"[KR] pit_monthly {ym} 집계 실패 — 다음 실행에서 재시도: {e}")
 
 
 def pit_day(bas):
@@ -366,20 +361,11 @@ def run_stocks(force_start=None):
 
     d, recs, calls, saved = start, [], 0, 0
     idx_rows = []                          # 지수 종가 → indicator_raw 덮어쓰기용(야후 지연 보정)
-    pit = []                               # point-in-time: 그날 상장돼 있던 '전 종목'(필터 전)
     while d <= today:
         if d.weekday() < 5:                # 주말 스킵(휴일은 빈 응답)
             bas = d.strftime("%Y%m%d")
             for p in paths:
-                mkt = "KOSPI" if p == MKT_PATH["KOSPI"] else "KOSDAQ"
                 for x in get(p, bas):
-                    # ↓ 필터 '전'에 전 종목을 따로 담는다. 응답엔 이미 다 들어와 있는데
-                    #   아래 tier 필터로 버리고 있었다 — 그래서 과거 유니버스가 복구 불가였다.
-                    if num(x["TDD_CLSPRC"]):
-                        pit.append({"code": x["ISU_CD"], "dt": d.isoformat(), "market": mkt,
-                                    "name": (x.get("ISU_NM") or "").strip(),
-                                    "close": num(x["TDD_CLSPRC"]), "tval": num(x["ACC_TRDVAL"]),
-                                    "shares": num(x["LIST_SHRS"]), "mktcap": num(x["MKTCAP"])})
                     tier = codes.get(x["ISU_CD"])
                     if not tier or (tier[1] == SHALLOW_DAYS and d < shallow_from):
                         continue           # 대상 아님 / 얕은 티어의 오래된 날짜
@@ -415,10 +401,8 @@ def run_stocks(force_start=None):
         sb.table("stock_daily").upsert(recs, on_conflict="code,dt").execute()
         saved += len(recs)
     print(f"[KR] 개별종목: 조회 {calls}콜 → {saved}행 적재")
-    # point-in-time: 위 루프에서 이미 받아둔 '전 종목'을 버퍼에 넣고, 끝난 달은 월말 스냅샷으로
-    # 넘긴 뒤 버퍼를 정리한다. 추가 API 호출은 0 — 응답에 이미 다 들어 있던 데이터다.
-    pit_flush(pit)
-    pit_rollup(today)
+    # point-in-time: 지난달 월말 스냅샷이 아직 없으면 그 달을 재조회해 집계 (한 달에 한 번)
+    pit_catchup(today)
     # 지수 종가를 indicator_raw에 덮어쓴다(야후분보다 하루 빠른 값). 메타는 ingest.py가 이미
     # 등록해 둬서 FK는 충족된다 — 실패해도 종목 적재를 되돌리지 않게 예외를 삼킨다.
     if idx_rows:

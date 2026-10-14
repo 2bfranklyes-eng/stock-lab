@@ -21,6 +21,9 @@
 
 -- ── 일별 버퍼 (40일 롤링, krx.py가 오래된 행을 지운다) ──
 -- 월말 집계를 만들기 위한 임시 저장소일 뿐이라 공개하지 않는다(service_role 전용).
+-- ⚠️ 2026-10-14 폐기(drop table): 매일 넣고 지우는 버퍼라 빈자리까지 수십 MB를 차지했다.
+--    지금은 krx.py pit_catchup 이 달이 끝난 뒤 그 달을 KRX 에서 재조회해 바로 집계한다
+--    (2026-09 를 두 경로로 만들어 2,773종목 × 8개 값 전부 일치 확인). 아래는 기록용.
 create table if not exists pit_daily (
   code   text not null,
   dt     date not null,
