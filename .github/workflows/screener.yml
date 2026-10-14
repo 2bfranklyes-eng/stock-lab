@@ -40,3 +40,11 @@ jobs:
       - run: python dart.py
         continue-on-error: true
       - run: python guru.py
+      # ── 사업보고서 점검 (sql/biz_check.sql) ──
+      # 분기 재무 이력: 최근 14일 정기공시 + 새로 유니버스에 든 종목. 주 1회에 14일 창이라 겹치며 빠짐이 없다.
+      # DART 하루 2만 건 한도 안이다(dart.py ~1,500 + 이것 수백~2,000). 끊겨도 다음 주가 이어받는다.
+      - run: python fin_hist.py
+        continue-on-error: true
+      - run: python dart_events.py   # 주요사항보고(CB·유상증자 …) 최근 14일 + 새 사업보고서 감사의견
+        continue-on-error: true
+      - run: python fin_score.py     # 네 축 점수 → fin_score, 관심종목(watch) 빈자리 채우기
