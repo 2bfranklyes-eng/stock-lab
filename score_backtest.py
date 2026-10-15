@@ -126,6 +126,9 @@ def main():
         if len(uni) < 200:
             continue
         s = score_month(uni, mets).merge(grp[["code", "fwd", "gone"]], on="code")
+        # 자료 초입엔 4분기 합(TTM)이 안 서서 셋 이상 축을 가진 종목이 거의 없다 — 그런 달은 5분위가 안 나뉜다
+        if len(s) < 100:
+            continue
         s["ym"] = ym
         rec.append(s)
     p = pd.concat(rec, ignore_index=True)
