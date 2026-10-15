@@ -189,6 +189,8 @@ def evaluate(p):
     print("\n── 축별 상위 20% (어느 축이 일을 하나) ──")
     for ax, nm in (("s_growth", "성장"), ("s_profit", "수익성"), ("s_cash", "현금"), ("s_health", "건전성")):
         pp = p.dropna(subset=[ax]).copy()
+        cnt = pp.groupby("ym")[ax].transform("size")
+        pp = pp[cnt >= 50]                      # 그 축 값이 50개 미만인 달은 5분위가 안 나뉜다(자료 초입의 성장 축)
         pp["qa"] = pp.groupby("ym")[ax].transform(lambda s: pd.qcut(s.rank(method="first"), 5, labels=False))
         show(portfolio(pp, lambda g: g[g["qa"] == 4], nm), f"{nm} 상위 20%")
     gone = p.groupby("q")["gone"].mean() * 100
