@@ -203,12 +203,18 @@ def kr_rows(uni, dart):
     for r in uni:
         d = dart.get(r["code"])
         mc, px = r.get("marcap"), r.get("close")
-        ni, eq = (d or {}).get("net_income"), (d or {}).get("equity")
+        # 지배주주 몫 기준(한국 관행). 칸이 아직 비어 있으면(dart.py 가 새 칸을 채우기 전) 총계로.
+        # 총계를 쓰면 비지배지분 몫까지 '내 몫'으로 세 지주사가 싸 보인다(실측 SK㈜ PER 3.5배 차이)
+        ni = d["net_income_owner"] if d and d.get("net_income_owner") is not None else (d or {}).get("net_income")
+        eq = d.get("equity_owner") if d and d.get("equity_owner") is not None else (d or {}).get("equity")
+        nci = (d["equity"] - d["equity_owner"]) if d and None not in (d.get("equity"), d.get("equity_owner")) else 0
         # 밸류에이션 분자: 주가 × 회사 전체 주식수 (= 이 회사를 통째로 살 때의 값을
         # '이 클래스 주가'로 환산한 것). 규모 판정·화면 표시에 쓰는 marcap 은 그대로 둔다.
         mv = px * tot_shares.get((d or {}).get("corp_code") or r["code"], 0) if px else None
-        per = mv / ni if mv and ni and ni > 0 else r.get("per")
-        pbr = mv / eq if mv and eq and eq > 0 else r.get("pbr")
+        # DART 행이 있으면 적자·자본잠식은 PER·PBR 없음 — 야후 값(우선주 미보정·다른 분기)으로 메우면
+        # DART 로는 적자인 회사가 양수 PER 로 보였다
+        per = mv / ni if mv and ni and ni > 0 else (None if d else r.get("per"))
+        pbr = mv / eq if mv and eq and eq > 0 else (None if d else r.get("pbr"))
         out.append({
             "code": r["code"], "name": r["name"], "market": r["market"],
             "sector": r.get("sector"), "currency": "KRW",
@@ -226,6 +232,7 @@ def kr_rows(uni, dart):
             # 마법공식 한국판 전용 — DART 라야 나오는 값들
             "roic": (d or {}).get("roic"), "ebit": (d or {}).get("ebit"),
             "_mv": mv,          # 밸류에이션용 분자(우선주 보정본). 이익수익률도 이걸로 나눈다
+            "_nci": nci,        # 비지배지분 — 이익수익률 분모에 더한다(EBIT 는 자회사 몫까지 100% 잡히므로)
             "fiscal_q": (d or {}).get("fiscal_q") or r.get("fiscal_q"),
             "fin_src": "DART" if d else "야후",
         })
@@ -338,7 +345,8 @@ def enrich(rows):
         s["_min_cap"] = US_MIN_CAP if s["market"] == "US" else KR_MIN_CAP
         # 마법공식의 두 축. 시장마다 얻을 수 있는 게 달라서 계산식이 다르다 — 순위를 시장별로
         # 따로 매기니 섞이지는 않지만, 화면에는 반드시 밝혀야 한다.
-        #   한국(DART): 원본 그대로. ROIC = EBIT ÷ (순운전자본+순고정자산), 이익수익률 = EBIT ÷ 시총
+        #   한국(DART): ROIC = EBIT ÷ (순운전자본+순고정자산) 는 원본 그대로. 이익수익률은 원본이 EBIT ÷ EV 인데
+        #               차입금 계정이 회사마다 달라 EV 를 못 만든다 → EBIT ÷ (시총 + 비지배지분). 부채는 빠져 있다
         #   미국(야후) : EBIT·투하자본을 못 얻어 근사. ROA, 그리고 EBITDA ÷ EV
         # EV 를 쓰는 쪽(미국)은 부채까지 값에 넣지만 한국은 시총 기준이다 — 한국은 대신 ROIC 가
         # 자본 효율을 원본대로 잡아준다.
@@ -350,8 +358,11 @@ def enrich(rows):
             # 분모는 우선주 보정을 거친 _mv — marcap 을 쓰면 우선주의 이익수익률이
             # 회사 전체 EBIT ÷ 클래스 시총이 돼 10배 넘게 부풀려진다(PER 과 같은 함정).
             mc, ebit = s.get("_mv") or s.get("marcap"), s.get("ebit")
-            s["_roc"] = s.get("roic") if s.get("roic") is not None else s.get("roa")
-            s["_ey"] = (ebit / mc) if ebit is not None and mc else None
+            # ROIC 가 없는 종목(지주사처럼 투하자본이 잡음인 곳)은 ROA 로 메우지 않고 순위에서 뺀다 —
+            # 성격이 다른 두 값을 한 줄로 세우면 순위가 의미를 잃는다(2026-10-17 검토)
+            s["_roc"] = s.get("roic")
+            ev = (mc or 0) + (s.get("_nci") or 0)
+            s["_ey"] = (ebit / ev) if ebit is not None and ev > 0 else None
     # 오닐의 L(상대강도)은 '같은 시장 안에서의 순위'다 — 미국·한국을 섞어 매기면 환율·시장
     # 전체 흐름이 종목 실력으로 둔갑한다. 그래서 시장별로 따로 백분위를 낸다.
     for mk in {r["market"] for r in rows}:
@@ -425,7 +436,7 @@ GURUS = [
                 "연 15~50% 구간만 본다.",
         "rules": [
             ("PEG 1.0 이하", between("peg", 0.01, 1.0)),
-            ("이익성장 15~50%", between("earn_growth", 0.15, 0.50)),
+            ("이익성장(전년 동기 대비) 15~50%", between("earn_growth", 0.15, 0.50)),
             ("PER 30배 이하 (흑자)", between("per", 0.1, 30)),
             ("부채/자본 80% 이하", le("debt_to_equity", 80)),
             ("충분한 규모", lambda s: (s.get("marcap") or 0) >= s["_min_cap"]),
@@ -457,7 +468,7 @@ GURUS = [
         "idea": "실적이 급증하면서 주가가 이미 신고가 부근에 있는 종목. "
                 "싼 것을 사는 게 아니라 강한 것을 산다. 7조건 중 계량 가능한 4개.",
         "rules": [
-            ("C — 최근 분기 이익성장 20% 이상", ge("earn_growth", 0.20)),
+            ("C — 이익성장(전년 동기 대비) 20% 이상", ge("earn_growth", 0.20)),
             ("A — 매출성장 10% 이상", ge("rev_growth", 0.10)),
             ("N — 52주 신고가 대비 85% 이상", ge("off_high", 0.85)),
             ("L — 12개월 상대강도 상위 30%", ge("_rs", 70)),

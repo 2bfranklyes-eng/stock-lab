@@ -59,14 +59,19 @@ ACC = {
     "revenue": ["ifrs-full_Revenue", "ifrs-full_RevenueFromContractsWithCustomers"],
     "op_income": ["dart_OperatingIncomeLoss", "ifrs-full_ProfitLossFromOperatingActivities"],
     "net_income": ["ifrs-full_ProfitLoss"],
+    # 지배주주 몫 — 한국 PER·PBR·ROE 의 관행 기준. 연결 순이익·자본총계에는 비지배지분 몫이 섞여,
+    # 자회사 지분율이 낮은 지주사가 실제보다 훨씬 싸 보였다(2026-10-17 검토). 별도(OFS)에는
+    # 이 계정이 없다 — 비지배지분이 없으니 총계가 곧 지배주주 몫이라 총계로 폴백한다.
+    "ni_owner": ["ifrs-full_ProfitLossAttributableToOwnersOfParent"],
     "assets": ["ifrs-full_Assets"],
     "liabilities": ["ifrs-full_Liabilities"],
     "equity": ["ifrs-full_Equity"],
+    "eq_owner": ["ifrs-full_EquityAttributableToOwnersOfParent"],
     "cur_assets": ["ifrs-full_CurrentAssets"],
     "cur_liabilities": ["ifrs-full_CurrentLiabilities"],
     "ppe": ["ifrs-full_PropertyPlantAndEquipment"],
 }
-BS_KEYS = {"assets", "liabilities", "equity", "cur_assets", "cur_liabilities", "ppe"}
+BS_KEYS = {"assets", "liabilities", "equity", "eq_owner", "cur_assets", "cur_liabilities", "ppe"}
 
 
 class DartBlocked(Exception):
@@ -214,8 +219,13 @@ def snapshot(code, name, market, cc, today):
         r = cur.get(key)
         if not r:
             return None
-        return num(r.get("frmtrm_add_amount")) if num(r.get("frmtrm_add_amount")) is not None \
-            else num(r.get("frmtrm_q_amount"))
+        # 사업보고서에는 누적 칸이 없고 frmtrm_amount(전년 연간)만 있다(2026-10-17 확인) — 이 폴백이
+        # 없으면 3~5월에 한국 성장률이 비어 야후 값으로 조용히 바뀌었다
+        # (분기보고서의 frmtrm_amount 는 전년 동기 '3개월'이라 누적과 섞으면 안 된다 — 사업보고서만)
+        for f in ("frmtrm_add_amount", "frmtrm_q_amount") + (("frmtrm_amount",) if rc == "11011" else ()):
+            if num(r.get(f)) is not None:
+                return num(r.get(f))
+        return None
 
     def bs(key):
         r = cur.get(key)
@@ -228,7 +238,7 @@ def snapshot(code, name, market, cc, today):
         if not prev:                                  # 아직 안 나왔으면 그 전 해로
             _d, prev = statements(cc, year - 1, "11011")
         if prev:
-            for k in ("revenue", "op_income", "net_income"):
+            for k in ("revenue", "op_income", "net_income", "ni_owner"):
                 r = prev.get(k)
                 annual[k] = num(r.get("thstrm_amount")) if r else None
 
@@ -236,6 +246,12 @@ def snapshot(code, name, market, cc, today):
     opi = ttm(add("op_income"), prev_add("op_income"), annual.get("op_income"))
     net = ttm(add("net_income"), prev_add("net_income"), annual.get("net_income"))
     assets, liab, eq = bs("assets"), bs("liabilities"), bs("equity")
+    # 지배주주 몫 — 계정이 없으면(별도 재무제표·비지배지분 없는 회사) 총계가 곧 지배주주 몫.
+    # 분기보고서면 직전 연간에도 지배주주 순이익이 있어야 TTM 을 한 기준으로 만든다
+    owner_ni = "ni_owner" in cur and (rc == "11011" or annual.get("ni_owner") is not None)
+    ni_k = "ni_owner" if owner_ni else "net_income"
+    net_own = ttm(add(ni_k), prev_add(ni_k), annual.get(ni_k))
+    eq_own = bs("eq_owner") if "eq_owner" in cur else eq
     ca, cl, ppe = bs("cur_assets"), bs("cur_liabilities"), bs("ppe")
 
     def growth(key):
@@ -263,8 +279,9 @@ def snapshot(code, name, market, cc, today):
         "revenue": rev, "op_income": opi, "net_income": net,
         "assets": assets, "liabilities": liab, "equity": eq,
         "cur_assets": ca, "cur_liabilities": cl, "ppe": ppe,
-        "rev_growth": growth("revenue"), "earn_growth": growth("net_income"),
-        "roe": (net / eq) if net is not None and eq else None,
+        "net_income_owner": net_own, "equity_owner": eq_own,
+        "rev_growth": growth("revenue"), "earn_growth": growth(ni_k),
+        "roe": (net_own / eq_own) if net_own is not None and eq_own else None,
         "roa": (net / assets) if net is not None and assets else None,
         "op_margin": (opi / rev) if opi is not None and rev else None,
         "profit_margin": (net / rev) if net is not None and rev else None,
