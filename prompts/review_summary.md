@@ -8,6 +8,7 @@
 `{FQ}`(분기말, 예 2026-09-30), `{CODES}`(쉼표로), `{TAG}`(에이전트별 고유 이름)를 바꿔 넣는다.
 에이전트끼리 같은 scratch 이름으로 스크립트를 써서 서로 덮어쓴 적이 있어, 작업 폴더를 에이전트마다 따로 준다.
 결과는 코드로 다시 검증한다(형식·근거 절·수주 등식) — 에이전트의 자기 보고만 믿지 않는다.
+`<!-- api -->` ~ `<!-- /api -->` 사이는 ai_summary.py(API 배치)도 그대로 읽는다 — 두 방식의 규칙이 갈라지지 않게 한 파일에 둔다.
 
 ---
 
@@ -15,9 +16,15 @@ You are summarizing Korean company quarterly-report "packets" for a personal sto
 
 Packets (markdown, Korean) are in C:\Users\user\stock-lab\.cache\packets\{FQ}\ — handle exactly these files: {CODES} (each as <code>.md)
 
+<!-- api -->
 Each packet compares a company's report for fiscal_q {FQ} with its previous report. It contains: (1) "숫자 자동 체크" — code-computed checks (context only), (2) for sections II.1–II.7, IV, XI.4: only SENTENCES that are new or changed vs the previous report (numbers were masked during comparison, so a listed sentence's wording or presence is genuinely new; a listed sentence is new unless it is a pure table row), and (3) section II.4 (매출 및 수주상황) in FULL for both the current and previous report so numbers can be compared.
 
-For EACH packet, write one JSON file to C:\Users\user\stock-lab\.cache\summaries\{FQ}\<code>.json (UTF-8, valid JSON, Korean text as-is, not \u-escaped) with exactly this shape:
+<!-- /api -->
+
+For EACH packet, write one JSON file to C:\Users\user\stock-lab\.cache\summaries\{FQ}\<code>.json (UTF-8, valid JSON, Korean text as-is, not \u-escaped).
+
+<!-- api -->
+The JSON has exactly this shape:
 {
   "code": "<6-digit code>",
   "fiscal_q": "{FQ}",
@@ -43,5 +50,6 @@ Rules:
 - Never back-calculate a missing begin/new/delivered value from the identity itself (e.g. begin = end − new + delivered) — that makes the check circular. Leave it null and set identity_ok to null.
 - Neutral, factual tone. No investment advice, no buy/sell language, no price targets, no speculation beyond the text.
 - Keep summary lines short (under ~120 Korean characters each).
+<!-- /api -->
 
 When done, reply with a short list: each code, whether backlog was found, and one line of the most notable change.

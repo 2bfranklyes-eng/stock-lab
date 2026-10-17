@@ -28,6 +28,8 @@ jobs:
       # DART 는 동시 요청에 아주 민감하다 — 6으로 돌렸더니 486종목 중 257이 TCP reset 으로
       # 끊겼고, 3으로 낮춰도 IP 자체가 한동안 막혔다. 순차(1)가 안전하다. 500종목 ≈ 8분.
       DART_WORKERS: '1'
+      # 분기 점검 AI 요약(ai_summary.py) — 없으면 그 단계만 조용히 건너뛴다
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -50,3 +52,7 @@ jobs:
       - run: python fin_score.py     # 네 축 점수 → fin_score, 관심종목(watch) 빈자리 채우기
       # 관심종목 최신 분기 숫자 자동 체크 → review.checks. 요약(AI)·판정(사람)은 건드리지 않는다
       - run: python review.py checks
+      # 직전 분기 보고서가 새로 나온 관심종목만 AI 요약(배치 API, Sonnet) → 검증 → review 적재.
+      # 3분기 200종목 ≈ $6. 보고서 원문 내려받기(종목당 2건)로 DART 수백 건을 더 쓴다
+      - run: python ai_summary.py --fq auto --todo 250 --load
+        continue-on-error: true
