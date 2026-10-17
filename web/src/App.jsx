@@ -185,8 +185,9 @@ const FUEL_STATS_NOTE = (
     실탄이 <b>풍부</b>할 때 순풍인지, <b>고갈</b>일 때 바닥인지 — 느린 배경 지표라 참고용.
     <br />⚠️ 표본이 안 겹쳐도 <b>연달아 같은 밴드면 사실상 한 사건</b>이라 '사건 수'를 함께 보세요.
     한 자릿수면 통계가 아니라 사례 모음입니다.
-    <br />⚠️ 🇰🇷는 <b>월간 데이터를 월초에 붙인</b> 값이에요. M2 말잔·순매수는 그 달이 끝나야 확정되니
-    (M2는 약 2개월 뒤 공표) 실제로는 못 썼을 정보가 섞입니다 — 수치가 실제보다 유리하게 나옵니다.</>
+    <br />📅 진입 시점은 <b>공표일</b> 기준이에요 — 🇰🇷 월간 값은 M2가 나오는 다다음 달 15일, 🇺🇸 수요일 값은
+    공표 다음 날(금요일)부터. 예전엔 🇰🇷를 그 달 1일에 붙여 아직 몰랐던 값을 쓰는 셈이었고, 그걸 고치자
+    '여유−부족' 20일 차이가 3.1%p → 1.1%p로 줄었습니다(60일 차이는 유지).</>
 )
 // 실탄 차트 구간 프리셋 — 미국=주간·한국=월간이라 슬라이스 '행 수'가 다름
 const F_RANGES_US = [{ label: '1년', days: 52 }, { label: '3년', days: 156 }, { label: '5년', days: 260 }, { label: '전체', days: Infinity }]
@@ -382,7 +383,8 @@ const MIX_FACTORS = [
 ]
 // 기본은 '배경만'(심리 0). 심리는 4성분이 거의 다 주가 파생(모멘텀 = 지수÷125일평균)이라,
 // 넣으면 "주가로 주가를 설명"하는 꼴이 되고 선행성도 오히려 떨어진다.
-//   배경 3요인의 주가 선행 상관(+60일): US 0.41 / KR 0.47   ← 심리 포함시 0.36 / 0.29
+//   배경 3요인의 주가 선행 상관(+60일): US 0.30 / KR 0.44   ← 심리 포함시 0.25 / 0.37
+//   (2026-10-17 실탄 공표 시차 반영해 재계산. 예전 문구 0.41/0.47 은 다른 기간·시차 미반영 값)
 // 기간을 반으로 갈라도 4개 구간 전부에서 같은 방향으로 살아남은 건 '배경만'뿐이었다.
 const MIX_PRESETS = [
   { name: '배경만', w: { s: 0, l: 35, i: 35, f: 35 } },
@@ -2070,6 +2072,22 @@ function FuelMethod() {
 // ── 비교 섹션: 실제 주가에 대표 지수(심리·유동성·물가·실탄)를 겹쳐 봄 (듀얼 Y축) ──
 // 우리 지수(0~100)는 검증 팔레트(파랑·초록·보라·분홍), 주가는 무채색+갈색 계열로 묶어
 // "주가 한 덩어리 vs 지수들"이 한눈에 갈리게 한다. price_daily.code 와 key가 1:1.
+// 실탄 값이 실제로 알려지는 날(공표일) — fuel_backtest.py known_dt 와 같은 규칙(2026-10-17 검토).
+// dt 는 '데이터가 가리키는 기간'이다. KR(월간)은 그 달 1일인데 M2 는 다다음 달 중순에 공표되고,
+// US(주간)는 수요일 기준값이 목요일 장 마감 뒤 나온다. dt 에 그대로 붙이면 미래 정보가 섞인다.
+function fuelKnownDt(market, dt) {
+  const d = new Date(dt + 'T00:00:00Z')
+  if (market === 'KR') { d.setUTCMonth(d.getUTCMonth() + 2); d.setUTCDate(d.getUTCDate() + 14) }
+  else d.setUTCDate(d.getUTCDate() + 2)
+  return d.toISOString().slice(0, 10)
+}
+// 공표일 당일 또는 그 뒤 첫 거래일(정렬된 날짜 배열에서). 없으면 -1
+function firstOnOrAfter(dts, dt) {
+  let lo = 0, hi = dts.length - 1, best = -1
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (dts[m] >= dt) { best = m; hi = m - 1 } else lo = m + 1 }
+  return best
+}
+
 const PRICE_LINES = {
   US: [
     { key: 'us_index', name: 'S&P500', color: '#111827', width: 2 },
@@ -2259,7 +2277,10 @@ function ComparisonColumn({ market, flag, name }) {
         if (!px.length) { setState('empty'); return }
         // 지수별 code를 한 날짜 행에 펼친다 — {dt, us_index, us_nasdaq, us_dow, s, l, i, f}
         const byDt = new Map()
-        px.forEach((p) => {
+        // 차트의 지수 code 만 — price_daily 에는 1970년부터의 월간 지표(경기 국면 탭용)도 섞여 있어
+        // 거르지 않으면 X축이 1970년부터 시작하고 '3년=756행' 같은 행 기준 구간이 어긋났다
+        const want = new Set(PRICE_LINES[market].map((l) => l.key))
+        px.filter((p) => want.has(p.code)).forEach((p) => {
           let r = byDt.get(p.dt)
           if (!r) { r = { dt: p.dt }; byDt.set(p.dt, r) }
           r[p.code] = p.close
@@ -2267,11 +2288,10 @@ function ComparisonColumn({ market, flag, name }) {
         sent.forEach((x) => { const r = byDt.get(x.dt); if (r) r.s = x.s_score })
         liq.forEach((x) => { const r = byDt.get(x.dt); if (r) r.l = x.l_score })
         inf.forEach((x) => { const r = byDt.get(x.dt); if (r) r.i = x.i_score })
-        // 실탄은 주간/월간이라 주가 날짜에 없을 수 있음 → 가장 가까운(≤) 거래일에 스냅
+        // 실탄은 주간/월간 — 공표일 당일 또는 그 뒤 첫 거래일에 붙인다(그 전엔 몰랐던 값)
         const dts = [...byDt.keys()]
         fuel.forEach((x) => {
-          let lo = 0, hi = dts.length - 1, best = -1
-          while (lo <= hi) { const m = (lo + hi) >> 1; if (dts[m] <= x.dt) { best = m; lo = m + 1 } else hi = m - 1 }
+          const best = firstOnOrAfter(dts, fuelKnownDt(market, x.dt))
           if (best >= 0) { const r = byDt.get(dts[best]); if (r) r.f = x.f_score }
         })
         setRows([...byDt.values()]); setState('ok')
@@ -3660,13 +3680,21 @@ function CompositeColumn({ market, flag, name, w, inv }) {
         if (!alive) return
         // 주가는 지수별 code를 그대로 펼친다 — 비교 탭과 같은 차트를 쓰기 때문(지수화·추세이탈)
         const byDt = new Map()
-        px.forEach((p) => {
+        // 차트의 지수 code 만 — price_daily 에는 1970년부터의 월간 지표(경기 국면 탭용)도 섞여 있어
+        // 거르지 않으면 X축이 1970년부터 시작하고 '3년=756행' 같은 행 기준 구간이 어긋났다
+        const want = new Set(PRICE_LINES[market].map((l) => l.key))
+        px.filter((p) => want.has(p.code)).forEach((p) => {
           let r = byDt.get(p.dt)
           if (!r) { r = { dt: p.dt }; byDt.set(p.dt, r) }
           r[p.code] = p.close
         })
+        const mdts = [...byDt.keys()]
         MIX_FACTORS.forEach((f, k) => {
-          facs[k].forEach((x) => { const r = byDt.get(x.dt); if (r) r[f.key] = x[f.col] })
+          facs[k].forEach((x) => {
+            // 실탄은 공표일 당일 또는 그 뒤 첫 거래일부터 — 기준월 1일에 붙이면 미래 정보가 섞인다
+            const dt = f.table === 'fuel_index' ? mdts[firstOnOrAfter(mdts, fuelKnownDt(market, x.dt))] : x.dt
+            const r = dt && byDt.get(dt); if (r) r[f.key] = x[f.col]
+          })
         })
         // 실탄은 주간/월간이라 빈 날이 많음 → 직전값으로 이어 붙인다(그날까지 알려진 최신값)
         const main = PRICE_LINES[market][0].key    // 대표 지수 — 밴드 통계는 이걸로 낸다
@@ -3886,7 +3914,8 @@ function CompositeMethod() {
       <p className="note">
         <b>왜 심리를 뺐나</b> — 심리는 4성분이 거의 다 <b>주가로 만들어져</b> 있어요(모멘텀 = 지수÷125일평균,
         위험선호 = 주식−채권, 시장폭 = 지수−지수). 넣으면 <b>주가로 주가를 설명</b>하는 꼴이 됩니다.
-        실제로 심리를 빼니 주가 선행 상관(+60일)이 🇺🇸 0.36→<b>0.41</b>, 🇰🇷 0.29→<b>0.47</b>로 올라갔어요.
+        실제로 심리를 빼니 주가 선행 상관(+60일)이 🇺🇸 0.25→<b>0.30</b>, 🇰🇷 0.37→<b>0.44</b>로 올라갔어요
+        (2026년 10월, 실탄 공표 시차를 반영해 다시 잰 값).
         심리는 <b>"지금 상태"</b>를 재는 데 쓰고(동시점 상관 0.5), <b>"앞으로"</b>는 배경 3요인에 맡깁니다.
       </p>
       <p className="note">

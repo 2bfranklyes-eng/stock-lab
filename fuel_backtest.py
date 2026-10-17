@@ -33,6 +33,13 @@ def fetch(table, sel, **eq):
     return pd.DataFrame(rows)
 
 
+def known_dt(market, dt):
+    """실탄 값이 실제로 알려지는 날(공표일). 웹 종합·비교 탭의 fuelKnownDt 와 같은 규칙."""
+    if market == "KR":
+        return dt + pd.DateOffset(months=2) + pd.Timedelta(days=14)
+    return dt + pd.Timedelta(days=2)
+
+
 def run(market):
     fuel = fetch("fuel_index", "dt,f_score,band", market=market)
     px = fetch("indicator_raw", "dt,value", market=market, code=PRICE_CODE[market])
@@ -44,6 +51,12 @@ def run(market):
     pv = px["value"].to_numpy()
     dts = px["dt"].to_numpy()
     fuel["dt"] = pd.to_datetime(fuel["dt"])
+    # 공표 시차 — dt 는 '그 데이터가 가리키는 기간'이지 '알게 된 날'이 아니다(2026-10-17 검토).
+    #   KR(월간): dt = 그 달 1일. M2 는 다다음 달 중순에 공표된다(8월분 → 10월 중순) → 기준월 + 2개월 + 14일.
+    #             외국인 순매수는 다음 달 초에 나오지만 종합 점수는 두 성분이 다 있어야 하므로 늦은 쪽을 따른다.
+    #   US(주간): WALCL·TGA 는 수요일 기준값을 목요일 장 마감 뒤 공표 → 금요일(+2일)부터 쓸 수 있다.
+    #   예전엔 dt 그대로 진입해, 그 달 외국인 순매수(= 그 달 주가와 같이 움직임)를 미리 아는 셈이었다.
+    fuel["dt"] = known_dt(market, fuel["dt"])
 
     # ⚠️ 주가 이력이 시작되기 전의 실탄 날짜는 반드시 버린다.
     #    KR 실탄은 2009-12부터인데 kr_index는 2015-01-02부터라, searchsorted가 그 62개월을
