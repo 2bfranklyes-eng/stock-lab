@@ -6,6 +6,10 @@ import {
 import { supabase, hasKey } from './supabaseClient'
 import './App.css'
 
+// 수익률 색 — 한국 시장 관례(빨강=상승, 파랑=하락)로 모든 탭 통일(2026-10-17 검토: 탭마다 초록/빨강이 반대였다).
+// 좋다/나쁘다를 뜻하는 밴드·게이지 색(극단완화=초록 등)은 수익률이 아니라 따로 둔다.
+const UP = '#c0392b', DN = '#2471a3'
+
 const BANDS = [
   { name: '극단공포', color: '#2471a3' },
   { name: '공포', color: '#5dade2' },
@@ -915,7 +919,7 @@ function StatsCard({ stats, order = STAT_ORDER, note = SENT_STATS_NOTE, countLab
                 </tr>
               )
             }
-            const color = v > 2 ? '#1e8449' : v < 0 ? '#c0392b' : 'inherit'
+            const color = v > 2 ? UP : v < 0 ? DN : 'inherit'
             return (
               <tr key={bd} className={bd === '전체' ? 'base' : ''}>
                 <td>{bd}</td>
@@ -1513,7 +1517,7 @@ function ComboCard({ combo }) {
             {cur && cur.n > 0 && (
               <span className="cyc-qstat">
                 과거 이 구간의 <b>이후 6개월</b>: 평균 <b>{pc(cur.avg)}</b>
-                (전체 평균 대비 <b style={{ color: cur.excess >= 0 ? '#c0392b' : '#2471a3' }}>
+                (전체 평균 대비 <b style={{ color: cur.excess >= 0 ? UP : DN }}>
                   {pc(cur.excess)}p</b>) · 승률 {(cur.win * 100).toFixed(0)}% · 사건 {cur.ep}건
               </span>
             )}
@@ -1536,7 +1540,7 @@ function ComboCard({ combo }) {
                 <tr key={b.label} style={b.label === band.label ? { fontWeight: 800 } : undefined}>
                   <td>{b.label === band.label ? '▶ ' : ''}{b.label}</td>
                   <td>{b.ep}건</td><td>{pc(b.avg)}</td>
-                  <td style={{ color: b.excess >= 0 ? '#c0392b' : '#2471a3' }}>{pc(b.excess)}p</td>
+                  <td style={{ color: b.excess >= 0 ? UP : DN }}>{pc(b.excess)}p</td>
                   <td>{(b.win * 100).toFixed(0)}%</td>
                   <td>{e?.n ? `${pc(e.excess)}p · ${(e.win * 100).toFixed(0)}%` : '—'}</td>
                   <td>{l?.n ? `${pc(l.excess)}p · ${(l.win * 100).toFixed(0)}%` : '—'}</td>
@@ -1763,7 +1767,7 @@ function CycleBody({ d }) {
             {nowAll && (
               <span className="cyc-qstat">
                 과거 이 국면의 <b>공표 후 12개월</b>: 평균 <b>{pc(nowAll.avg)}</b>
-                (전체 평균 대비 <b style={{ color: nowAll.excess >= 0 ? '#c0392b' : '#2471a3' }}>
+                (전체 평균 대비 <b style={{ color: nowAll.excess >= 0 ? UP : DN }}>
                   {pc(nowAll.excess)}p</b>) · 승률 {(nowAll.win * 100).toFixed(0)}% · 사건 {nowAll.ep}건
                 {nowRec && <><br />최근 15년만: 평균 {pc(nowRec.avg)} (대비 {pc(nowRec.excess)}p) ·
                   승률 {(nowRec.win * 100).toFixed(0)}% · 사건 {nowRec.ep}건</>}
@@ -1816,9 +1820,9 @@ function CycleBody({ d }) {
                   <td>{q === x.key ? '▶ ' : ''}{x.label}</td>
                   <td>{a.ep}건</td>
                   <td>{pc(a.avg)}</td>
-                  <td style={{ color: a.excess >= 0 ? '#c0392b' : '#2471a3' }}>{pc(a.excess)}p</td>
+                  <td style={{ color: a.excess >= 0 ? UP : DN }}>{pc(a.excess)}p</td>
                   <td>{(a.win * 100).toFixed(0)}%</td>
-                  <td style={{ color: r && r.excess >= 0 ? '#c0392b' : '#2471a3' }}>
+                  <td style={{ color: r && r.excess >= 0 ? UP : DN }}>
                     {r ? `${pc(r.excess)}p (${r.ep}건)` : '—'}</td>
                 </tr>
               )
@@ -2551,10 +2555,17 @@ const VP_US_PRICE = { spx: 'us_index', nasdaq: 'us_nasdaq', dow: 'us_dow' }
 async function fetchPrices(code, win, lastDt) {
   const from = new Date(new Date(lastDt).getTime() - win * 86400000).toISOString().slice(0, 10)
   if (VP_US_PRICE[code]) {
-    // 미국 지수는 price_daily에 종가뿐이라 평균선(거래대금·시총 필요)은 못 그린다
-    const { data } = await supabase.from('price_daily').select('dt,close')
-      .eq('market', 'US').eq('code', VP_US_PRICE[code]).gte('dt', from).order('dt')
-    return (data || []).map((r) => ({ dt: r.dt, close: r.close, ref: null }))
+    // 미국 지수는 price_daily에 종가뿐이라 평균선(거래대금·시총 필요)은 못 그린다.
+    // 5년 창은 ~1,255행 — 페이지네이션 없이 받으면 1,000행에서 잘려 최근 1년이 빠졌다(2026-10-17 검토)
+    let rows = []
+    for (let f = 0; f < 3000; f += 1000) {
+      const { data } = await supabase.from('price_daily').select('dt,close')
+        .eq('market', 'US').eq('code', VP_US_PRICE[code]).gte('dt', from).order('dt').range(f, f + 999)
+      if (!data || !data.length) break
+      rows = rows.concat(data)
+      if (data.length < 1000) break
+    }
+    return rows.map((r) => ({ dt: r.dt, close: r.close, ref: null }))
   }
   let all = []                                   // 5년 창은 1,000행을 넘어 페이지네이션이 필요
   for (let f = 0; f < 3000; f += 1000) {
@@ -2751,7 +2762,7 @@ function ProfileBody({ rows, series, holder }) {
                   <div className="vp-barwrap">
                     <div className="vp-bar" style={{
                       width: `${Math.max(0.5, r.share / max * 100)}%`,
-                      background: mid(r) > px ? '#c0392b' : '#2471a3',
+                      background: mid(r) > px ? UP : DN,
                     }} />
                     {hb && hb.bins[fi].total > 0 && (
                       <div className="vp-hstack" style={{ width: `${hb.bins[fi].total / hb.max * 100}%` }}>
@@ -2955,7 +2966,7 @@ function HolderSection({ rows, state, win, hwin }) {
             <span className="hp-name" style={{ color: t.color }}>{t.label}</span>
             <span className="hp-pos">{t.pos > 0 ? qtyFmt(t.pos) : '잔량 없음'}</span>
             {t.pos > 0 && t.cost > 0 && (
-              <span className="hp-pl" style={{ color: px >= t.cost ? '#c0392b' : '#2471a3' }}>
+              <span className="hp-pl" style={{ color: px >= t.cost ? UP : DN }}>
                 평단 {fmt(t.cost)} ({px >= t.cost ? '+' : ''}{(px / t.cost * 100 - 100).toFixed(1)}%)
               </span>
             )}
@@ -3123,10 +3134,11 @@ function QuadMap({ series }) {
   const path = series.map((r, idx) => `${idx ? 'L' : 'M'}${x(r.g_score).toFixed(1)},${y(r.i_score).toFixed(1)}`).join(' ')
   return (
     <svg className="al-quad" viewBox={`0 0 ${W} ${W}`} aria-label="국면 사분면 지도">
-      <rect x="0" y="0" width="50" height="50" fill="#d9770614" />
-      <rect x="50" y="0" width="50" height="50" fill="#c0392b14" />
-      <rect x="0" y="50" width="50" height="50" fill="#2471a314" />
-      <rect x="50" y="50" width="50" height="50" fill="#7c3aed14" />
+      {/* 배경은 QUAD_META 색과 같게 — 왼쪽=성장기대↓, 위=물가↑ (2026-10-17 좌우 반대였던 것 수정) */}
+      <rect x="0" y="0" width="50" height="50" fill="#c0392b14" />
+      <rect x="50" y="0" width="50" height="50" fill="#d9770614" />
+      <rect x="0" y="50" width="50" height="50" fill="#7c3aed14" />
+      <rect x="50" y="50" width="50" height="50" fill="#2471a314" />
       <line x1="50" y1="0" x2="50" y2="100" stroke="#94a3b8" strokeWidth=".4" />
       <line x1="0" y1="50" x2="100" y2="50" stroke="#94a3b8" strokeWidth=".4" />
       <text x="3" y="6" className="al-qlabel">물가↑·성장기대↓</text>
@@ -3291,7 +3303,7 @@ function AllocationSection() {
               return (
                 <tr key={m.key}>
                   <td>{m.emoji} {m.name}{m.badge && <em className="al-flag" title={m.badge}>⚠️</em>}</td>
-                  <td style={{ color: cur?.[`fwd${h}`] > 0 ? '#c0392b' : '#2471a3' }}>{fmt1(cur?.[`fwd${h}`])}</td>
+                  <td style={{ color: cur?.[`fwd${h}`] > 0 ? UP : DN }}>{fmt1(cur?.[`fwd${h}`])}</td>
                   <td>{cur?.[`hit${h}`] == null ? '—' : `${Math.round(cur[`hit${h}`])}%`}</td>
                   <td className="al-dim">{fmt1(all?.[`fwd${h}`])}</td>
                 </tr>
@@ -3338,11 +3350,11 @@ function AllocationSection() {
                     return (
                       <tr key={m.key}>
                         <td>{m.emoji} {m.name}</td>
-                        <td style={{ color: s.ret_avg > 0 ? '#c0392b' : '#2471a3' }}>{fmt1(s.ret_avg)}</td>
+                        <td style={{ color: s.ret_avg > 0 ? UP : DN }}>{fmt1(s.ret_avg)}</td>
                         <td>{fmt1(s.ret_med)}</td>
                         <td>{s.hit == null ? '—' : `${Math.round(s.hit)}%`}</td>
                         <td className="al-dim">{fmt1(s.worst)}</td>
-                        <td style={{ color: s.ret_krw > 0 ? '#c0392b' : '#2471a3' }}>{fmt1(s.ret_krw)}</td>
+                        <td style={{ color: s.ret_krw > 0 ? UP : DN }}>{fmt1(s.ret_krw)}</td>
                       </tr>
                     )
                   })}
@@ -3376,7 +3388,7 @@ function AllocationSection() {
                         <div key={s.asset} className="al-eprow"
                           title={s.mdd != null ? `구간 내 최대낙폭 ${fmt1(s.mdd)}` : undefined}>
                           <span>{m.emoji} {m.name}</span>
-                          <span style={{ color: s.ret_avg > 0 ? '#c0392b' : '#2471a3' }}>{fmt1(s.ret_avg)}</span>
+                          <span style={{ color: s.ret_avg > 0 ? UP : DN }}>{fmt1(s.ret_avg)}</span>
                           <span className="al-dim">원화 {fmt1(s.ret_krw)}</span>
                         </div>
                       )
@@ -3720,7 +3732,7 @@ function CompositeColumn({ market, flag, name, w, inv }) {
                 {stats.map((b, k) => {
                   if (!b.n) return null
                   const avg = b.sum / b.n
-                  const color = avg > 2 ? '#1e8449' : avg < 0 ? '#c0392b' : 'inherit'
+                  const color = avg > 2 ? UP : avg < 0 ? DN : 'inherit'
                   return (
                     <tr key={b.band.name}>
                       <td><span className="bdot" style={{ background: b.band.color }} />
@@ -3804,7 +3816,7 @@ function OutlookCard({ data, market }) {
       </section>
     )
   }
-  const tone = out.avg > 3 ? '#1e8449' : out.avg < 0 ? '#c0392b' : '#334155'
+  const tone = out.avg > 3 ? UP : out.avg < 0 ? DN : '#334155'
   return (
     <section className="card outlook">
       <h2>🔮 {OUTLOOK_H}일 전망</h2>
@@ -3975,7 +3987,7 @@ function AIStatus({ rows }) {
               <tr key={n.key}>
                 <td><span className="bdot" style={{ background: n.color }} />{n.name}</td>
                 <td>{n.fmt(px.last)}</td>
-                <td style={{ color: px.y1 > 0 ? '#1e8449' : '#c0392b' }}>
+                <td style={{ color: px.y1 > 0 ? UP : DN }}>
                   {px.y1 == null ? '—' : `${px.y1 > 0 ? '+' : ''}${px.y1.toFixed(0)}%`}
                 </td>
                 <td style={{ fontWeight: 700, color: hot ? '#c0392b' : '#334155' }}>
@@ -5361,9 +5373,9 @@ function PfSimulation({ items, total, prices }) {
         ))}
       </div>
       <div className="ocells">
-        <div><span>누적 수익률</span><b style={{ color: sim.ret > 0 ? '#1e8449' : '#c0392b' }}>
+        <div><span>누적 수익률</span><b style={{ color: sim.ret > 0 ? UP : DN }}>
           {sim.ret > 0 ? '+' : ''}{sim.ret.toFixed(0)}%</b></div>
-        <div><span>코스피 대비</span><b style={{ color: beat > 0 ? '#1e8449' : '#c0392b' }}>
+        <div><span>코스피 대비</span><b style={{ color: beat > 0 ? UP : DN }}>
           {beat > 0 ? '+' : ''}{beat.toFixed(0)}%p</b></div>
         <div><span>최대 낙폭</span><b style={{ color: '#c0392b' }}>{sim.mdd.toFixed(0)}%</b></div>
         <div><span>연 변동성</span><b>{sim.vol.toFixed(0)}%</b></div>

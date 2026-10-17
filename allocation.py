@@ -157,13 +157,16 @@ def compute_assets(w):
         px = w[a].dropna()
         if a in GLITCH_FILTER:
             px = deglitch(px)
-        mom = px.shift(21) / px.shift(252) - 1          # 12-1 모멘텀(최근 1달 제외 — 반전 노이즈 컷)
-        heat = px / px.rolling(200, min_periods=120).mean() - 1
+        # 창은 '행 수'라 거래일 252일/년 기준이다. BTC 는 주말까지 365행/년이라 그대로 쓰면
+        # '12개월'이 ~8개월이 된다(2026-10-17 검토) → 달력 기간이 같도록 행 수를 늘린다
+        k = (lambda n: round(n * 365 / 252)) if a == "btc" else (lambda n: n)
+        mom = px.shift(k(21)) / px.shift(k(252)) - 1    # 12-1 모멘텀(최근 1달 제외 — 반전 노이즈 컷)
+        heat = px / px.rolling(k(200), min_periods=k(120)).mean() - 1
         ra = px.pct_change()
         out = pd.DataFrame({
-            "c_trend": pct_rank(mom), "c_heat": pct_rank(heat), "raw_px": px,
-            "raw_dd252": (px / px.rolling(252, min_periods=120).max() - 1) * 100,
-            "raw_r12m": (px / px.shift(252) - 1) * 100,
+            "c_trend": pct_rank(mom, k(WIN), k(MINP)), "c_heat": pct_rank(heat, k(WIN), k(MINP)), "raw_px": px,
+            "raw_dd252": (px / px.rolling(k(252), min_periods=k(120)).max() - 1) * 100,
+            "raw_r12m": (px / px.shift(k(252)) - 1) * 100,
             "corr63_us": roll_corr(ra, r_us).reindex(px.index),
             "corr63_kr": roll_corr(ra, r_kr).reindex(px.index),
         })

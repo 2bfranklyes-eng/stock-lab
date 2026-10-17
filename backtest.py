@@ -101,7 +101,9 @@ def run(market):
             rec[f"fwd{h}"] = round(float(f.mean() * 100), 2) if len(f) else None
             rec[f"hit{h}"] = round(float((f > 0).mean() * 100), 1) if len(f) else None
         recs.append(rec)
-    sb.table("backtest_stats").upsert(recs, on_conflict="market,band").execute()
+    # delete→insert: 밴드가 사라져도 옛 행이 남지 않게(liquidity_backtest 와 같은 방식)
+    sb.table("backtest_stats").delete().eq("market", market).execute()
+    sb.table("backtest_stats").insert(recs).execute()
     print(f"[{market}] backtest_stats 적재 완료: {len(recs)}행\n")
 
 

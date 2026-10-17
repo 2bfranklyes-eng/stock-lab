@@ -54,7 +54,9 @@ def run(market):
         row = {"밴드": label, "일수": len(d)}
         for h in HORIZONS:
             row[f"이후{h}일"] = round(d[f"fwd{h}"].mean() * 100, 1)
-        row["20일승률"] = round((d["fwd20"] > 0).mean() * 100, 0)
+        # ⚠️ dropna 필수 — 최근 h일은 아직 미래가 없어 NaN 이고, NaN > 0 은 False 라 '패배'로 잡힌다(backtest.py 와 같은 수정)
+        f20 = d["fwd20"].dropna()
+        row["20일승률"] = round((f20 > 0).mean() * 100, 0) if len(f20) else None
         return row
 
     rows = [summary(b, m[m["band"] == b]) for b in ORDER if len(m[m["band"] == b])]
@@ -75,10 +77,13 @@ def run(market):
             continue
         rec = {"market": market, "band": b, "n": int(len(d))}
         for h in HORIZONS:
-            rec[f"fwd{h}"] = round(float(d[f"fwd{h}"].mean() * 100), 2)
-            rec[f"hit{h}"] = round(float((d[f"fwd{h}"] > 0).mean() * 100), 1)
+            f = d[f"fwd{h}"].dropna()
+            rec[f"fwd{h}"] = round(float(f.mean() * 100), 2) if len(f) else None
+            rec[f"hit{h}"] = round(float((f > 0).mean() * 100), 1) if len(f) else None
         recs.append(rec)
-    sb.table("inflation_backtest_stats").upsert(recs, on_conflict="market,band").execute()
+    # delete→insert: 밴드가 사라져도 옛 행이 남지 않게(liquidity_backtest 와 같은 방식)
+    sb.table("inflation_backtest_stats").delete().eq("market", market).execute()
+    sb.table("inflation_backtest_stats").insert(recs).execute()
     print(f"[{market}] inflation_backtest_stats 적재 완료: {len(recs)}행\n")
 
 
