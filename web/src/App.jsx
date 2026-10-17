@@ -2524,7 +2524,16 @@ const qtyFmt = (v) => {
 // 주가가 R 위면 평균 보유자가 이익권(매물 압력 완화), 아래면 물려 있는 상태.
 function splitAdjust(rows, adj = []) {
   const f = rows.map(() => 1)
-  const inWin = adj.filter((e) => rows.length && rows[0].dt < e.dt && e.dt <= rows[rows.length - 1].dt)
+  // 비율이 작은 사건은 그 무렵(앞 15일~뒤 90일) 상장주식수가 실제로 바뀐 경우만 — KRX 원자료에 '전일대비 0'으로
+  // 찍힌 평범한 날이 섞여 있다(profile.py adj_real 과 같은 규칙)
+  const real = (e) => {
+    if (e.ratio < 0.7 || e.ratio > 1.43) return true
+    const t = Date.parse(e.dt), sh = rows.filter((r) => {
+      const d = Date.parse(r.dt); return d >= t - 15 * 864e5 && d <= t + 90 * 864e5 && r.shares > 0
+    }).map((r) => r.shares)
+    return sh.length > 1 && Math.max(...sh) / Math.min(...sh) > 1.01
+  }
+  const inWin = adj.filter((e) => rows.length && rows[0].dt < e.dt && e.dt <= rows[rows.length - 1].dt && real(e))
   if (adj.length) {
     for (const e of inWin) rows.forEach((r, j) => { if (r.dt < e.dt) f[j] *= e.ratio })
   } else for (let i = 1; i < rows.length; i++) {

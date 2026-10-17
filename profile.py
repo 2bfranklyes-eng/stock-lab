@@ -290,6 +290,20 @@ def adj_events():
     return _ADJ
 
 
+def adj_real(r, sh, dt):
+    """KRX 기준가 사건이 진짜 권리락·분할인지. 비율이 크면(1:1 무상증자·액면분할) 그대로 믿고,
+    작으면 그 무렵 상장주식수가 실제로 바뀌었을 때만 믿는다 — KRX 원자료에 전일대비가 0 으로 찍힌
+    평범한 날이 섞여 있다(실측 현대건설 2021-09-01: −2.7% 하락이 '전일대비 0' → 가짜 0.973).
+    신주는 권리락 2~3주 뒤 상장되므로 앞 15일 ~ 뒤 90일을 본다. 웹 splitAdjust 와 같은 규칙."""
+    if r < 0.7 or r > 1.43:
+        return True
+    if sh is None:
+        return False
+    w = sh[(sh.index >= dt - pd.Timedelta(days=15)) & (sh.index <= dt + pd.Timedelta(days=90))]
+    w = w[w > 0]
+    return len(w) > 1 and w.max() / w.min() > 1.01
+
+
 def split_adjust(df, code=None):
     """수정주가 배율 — 이전 구간 가격에 곱한다. → (배율, 이벤트 목록)
 
@@ -301,11 +315,15 @@ def split_adjust(df, code=None):
     ev = adj_events().get(code) if code else None
     if ev:
         idx = df.index
+        sh = df["shares"] if "shares" in df else None
         for dt, r in ev:
             m = np.asarray(idx < dt)
-            if m.any() and m[-1] == False:         # noqa: E712  창 안에서 일어난 사건만
-                factor[m] *= r
-                events.append(f"{dt.date()} 기준가 조정 ×{r:.4g} → 이전 가격 ×{r:.4g}")
+            if not (m.any() and m[-1] == False):   # noqa: E712  창 안에서 일어난 사건만
+                continue
+            if not adj_real(r, sh, dt):
+                continue
+            factor[m] *= r
+            events.append(f"{dt.date()} 기준가 조정 ×{r:.4g} → 이전 가격 ×{r:.4g}")
         return factor, events
     sh, px = df["shares"].to_numpy(), df["close"].to_numpy()
     for i in range(1, len(df)):
