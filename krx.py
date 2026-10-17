@@ -343,6 +343,69 @@ def prune_dropped(codes, today):
         print(f"  워치리스트 이탈 {len(cs)}종목({tier}일 티어) — {cut} 이전 행 정리")
 
 
+def adj_of(x, bas, prev):
+    """KRX 일별 행 하나 → 주가 보정 사건(없으면 None). prev = {종목: 직전 거래일 종가} 를 갱신한다.
+    '전일대비'는 전일 종가가 아니라 그날 기준가 대비라, 기준가 = 종가 − 전일대비 이고 평소엔 전일 종가와
+    정확히 같다. 다르면 거래소가 권리락·분할로 기준가를 조정한 날이다(sql/stock_adj.sql)."""
+    c, close, chg = x["ISU_CD"], num(x["TDD_CLSPRC"]), num(x.get("CMPPREVDD_PRC"))
+    p = prev.get(c)
+    if close:
+        prev[c] = close
+    if not (p and close) or chg is None:
+        return None
+    base = close - chg
+    r = base / p
+    if base > 0 and abs(r - 1) > 0.002:          # 호가 단위 반올림보다 큰 차이만
+        return {"code": c, "dt": f"{bas[:4]}-{bas[4:6]}-{bas[6:]}", "ratio": round(r, 6)}
+    return None
+
+
+def adj_put(rows):
+    for i in range(0, len(rows), 500):
+        sb.table("stock_adj").upsert(rows[i:i + 500], on_conflict="code,dt").execute()
+
+
+def adj_seed(d, paths):
+    """d 직전 거래일의 전 종목 종가 — 날짜 루프 첫날의 '전일 종가'로 쓴다."""
+    prev = {}
+    for k in range(1, 10):
+        bas = (d - timedelta(days=k)).strftime("%Y%m%d")
+        rows = [x for p in paths for x in get(p, bas)]
+        if rows:
+            for x in rows:
+                if num(x["TDD_CLSPRC"]):
+                    prev[x["ISU_CD"]] = num(x["TDD_CLSPRC"])
+            return prev
+    return prev
+
+
+def adj_backfill(start):
+    """stock_adj 과거 채우기 — 날짜마다 코스피·코스닥 전 종목을 훑는다(2021-08~ 약 2,500콜, 재개 가능:
+    이미 적재된 마지막 날짜 다음부터). python krx.py --adj-backfill 20210801"""
+    paths = sorted(set(MKT_PATH.values()))
+    r = sb.table("stock_adj").select("dt").order("dt", desc=True).limit(1).execute().data
+    d = max(start, date.fromisoformat(r[0]["dt"]) + timedelta(days=1)) if r else start
+    prev, buf, n = adj_seed(d, paths), [], 0
+    print(f"stock_adj 백필 {d} ~ 오늘")
+    while d <= date.today():
+        if d.weekday() < 5:
+            bas = d.strftime("%Y%m%d")
+            for p in paths:
+                for x in get(p, bas):
+                    e = adj_of(x, bas, prev)
+                    if e:
+                        buf.append(e)
+                time.sleep(0.15)
+            if d.day == 1 or len(buf) >= 200:
+                adj_put(buf)
+                n += len(buf)
+                buf = []
+                print(f"  ~{d} 사건 누적 {n}", flush=True)
+        d += timedelta(days=1)
+    adj_put(buf)
+    print(f"stock_adj 백필 끝 — 사건 {n + len(buf)}건")
+
+
 def run_stocks(force_start=None):
     """워치리스트 종목의 일별 시세(거래대금·시총·상장주식수)를 stock_daily에 적재.
     스캔은 '날짜 단위'(한 콜에 그 날 전 종목) — 워치리스트가 바뀌어 과거가 빈 종목이 생기면
@@ -360,12 +423,17 @@ def run_stocks(force_start=None):
           f"· 하루 {len(paths) + len(IDX_TARGETS)}콜")
 
     d, recs, calls, saved = start, [], 0, 0
+    # 주가 보정 사건(stock_adj) — 같은 응답의 전 종목에서 기준가를 본다(콜 추가 없음, 첫날 전일 종가만 1~2콜)
+    adj_prev, adj_rows = adj_seed(start, sorted(set(MKT_PATH.values()))), []
     idx_rows = []                          # 지수 종가 → indicator_raw 덮어쓰기용(야후 지연 보정)
     while d <= today:
         if d.weekday() < 5:                # 주말 스킵(휴일은 빈 응답)
             bas = d.strftime("%Y%m%d")
             for p in paths:
                 for x in get(p, bas):
+                    e = adj_of(x, bas, adj_prev)
+                    if e:
+                        adj_rows.append(e)
                     tier = codes.get(x["ISU_CD"])
                     if not tier or (tier[1] == SHALLOW_DAYS and d < shallow_from):
                         continue           # 대상 아님 / 얕은 티어의 오래된 날짜
@@ -401,6 +469,13 @@ def run_stocks(force_start=None):
         sb.table("stock_daily").upsert(recs, on_conflict="code,dt").execute()
         saved += len(recs)
     print(f"[KR] 개별종목: 조회 {calls}콜 → {saved}행 적재")
+    if adj_rows:
+        try:
+            adj_put(adj_rows)
+            print(f"[KR] 주가 보정 사건 {len(adj_rows)}건 → stock_adj: "
+                  + ", ".join(f"{e['code']} {e['dt']} ×{e['ratio']:.3g}" for e in adj_rows[:8]))
+        except Exception as e:
+            print(f"[KR] stock_adj 적재 실패 — 매물대는 옛 판정으로: {e}")
     # point-in-time: 지난달 월말 스냅샷이 아직 없으면 그 달을 재조회해 집계 (한 달에 한 번)
     pit_catchup(today)
     # 지수 종가를 indicator_raw에 덮어쓴다(야후분보다 하루 빠른 값). 메타는 ingest.py가 이미
@@ -428,6 +503,11 @@ if __name__ == "__main__":
     if "--pit-backfill" in sys.argv:       # 과거 point-in-time 유니버스 백필 (약 40분, 재개 가능)
         rest = [a for a in sys.argv[1:] if a != "--pit-backfill"]
         pit_backfill(rest[0] if rest else "201501")
+        sys.exit()
+    if "--adj-backfill" in sys.argv:       # 주가 보정 사건 과거 채우기 (재개 가능)
+        rest = [a for a in sys.argv[1:] if a != "--adj-backfill"]
+        s = rest[0] if rest else "20210801"
+        adj_backfill(date(int(s[:4]), int(s[4:6]), int(s[6:])))
         sys.exit()
     if "--stocks" in sys.argv:             # 개별종목만 (지수 회전율은 건너뜀)
         rest = [a for a in sys.argv[1:] if a != "--stocks"]

@@ -140,7 +140,7 @@ def load_price(code, win_days):
     df = df[(df["close"] > 0) & (df["high"] > 0) & (df["mktcap"] > 0)]
     if df.empty:
         return df, []
-    f, events = vp.split_adjust(df)
+    f, events = vp.split_adjust(df, code)
     for c in ("high", "low", "close"):
         df[c] = df[c] * f
     df["fadj"] = f

@@ -39,7 +39,7 @@ def load_price(code, win_days):
     df["dt"] = pd.to_datetime(df["dt"])
     df = df.set_index("dt").astype(float)
     df = df[(df["close"] > 0) & (df["high"] > 0) & (df["mktcap"] > 0)]
-    f, events = vp.split_adjust(df)
+    f, events = vp.split_adjust(df, code)
     for c in ("high", "low", "close"):
         df[c] = df[c] * f
     df = df.rename(columns={"high": "High", "low": "Low", "close": "Close"})

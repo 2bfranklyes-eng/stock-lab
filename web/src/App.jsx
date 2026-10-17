@@ -2510,9 +2510,11 @@ const qtyFmt = (v) => {
   return Math.round(v).toLocaleString() + '주'
 }
 
-// 액면분할·병합 보정 — profile.py의 split_adjust와 같은 규칙이다(둘 중 하나만 고치면 안 됨).
-// 상장주식수가 급변한 날 주가가 그 역수만큼 움직였으면(=시총 연속) 분할류로 보고
-// 이전 구간 가격에 배율을 적용한다. 유상증자는 시총이 함께 늘어 주가가 안 꺾이므로 안 걸린다.
+// 수정주가 보정 — profile.py의 split_adjust와 같은 규칙이다(둘 중 하나만 고치면 안 됨).
+// 1순위: stock_adj(KRX 기준가에서 나온 거래소 조정 비율 — 분할·무상증자·유상증자 권리락·감자).
+// 2순위(그 종목에 사건 기록이 없을 때만): 상장주식수가 급변한 날 주가가 그 역수만큼 움직였으면 분할.
+//   이 옛 판정은 무상·유상증자를 못 잡는다 — 주가가 꺾이는 권리락일과 주식수가 늘어나는 신주 상장일이
+//   2~3주 떨어져 있어서다(실측 티앤엘 2026-08-06 / 08-28).
 // 이걸 안 하면 분할 종목(예: LS ELECTRIC 1:5)의 주가선이 매물대와 어긋나 보인다.
 //
 // 보정과 함께 '매물대 평균선'(G&H 참조가격)도 계산한다: 잔존 물량의 가중평균 매입가.
@@ -2520,9 +2522,12 @@ const qtyFmt = (v) => {
 //         가중합  S ← (1-회전율)·S + q × 그날 대표가
 //   평균선 R = S ÷ M   — 매물대 막대(비례 소진 모델)와 정확히 같은 가정이라 서로 들어맞는다.
 // 주가가 R 위면 평균 보유자가 이익권(매물 압력 완화), 아래면 물려 있는 상태.
-function splitAdjust(rows) {
+function splitAdjust(rows, adj = []) {
   const f = rows.map(() => 1)
-  for (let i = 1; i < rows.length; i++) {
+  const inWin = adj.filter((e) => rows.length && rows[0].dt < e.dt && e.dt <= rows[rows.length - 1].dt)
+  if (adj.length) {
+    for (const e of inWin) rows.forEach((r, j) => { if (r.dt < e.dt) f[j] *= e.ratio })
+  } else for (let i = 1; i < rows.length; i++) {
     const s0 = rows[i - 1].shares, s1 = rows[i].shares
     const p0 = rows[i - 1].close, p1 = rows[i].close
     if (!s0 || !s1 || !p0) continue
@@ -2576,7 +2581,8 @@ async function fetchPrices(code, win, lastDt) {
     all = all.concat(data)
     if (data.length < 1000) break
   }
-  return splitAdjust(all)
+  const { data: adj } = await supabase.from('stock_adj').select('dt,ratio').eq('code', code).order('dt')
+  return splitAdjust(all, adj || [])
 }
 
 // 매물대 막대 위에 겹쳐 그리는 주가선. 막대와 같은 영역·같은 가격 범위를 쓰므로

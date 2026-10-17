@@ -167,7 +167,7 @@ def main():
         d = g[g["shares"] > 0].set_index("dt")[["close", "shares"]]
         if len(d) < 2:
             continue
-        f, ev = vp.split_adjust(d)
+        f, ev = vp.split_adjust(d, c)
         if (f != 1.0).any():
             fadj[c] = pd.Series(f, index=d.index)
             events += [f"{c} {e}" for e in ev]

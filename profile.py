@@ -274,12 +274,40 @@ def run(key, push_rows=None):
 # 지수와 달리 종목은 '거래대금 ÷ 시가총액'이 G&H의 진짜 회전율(거래량÷유통주식수)과 같아
 # 모델이 근사가 아니라 정의대로 돌아간다. 원자료는 krx.py가 stock_daily에 적재.
 
-def split_adjust(df):
-    """주식수 변경(액면분할·병합·인적분할) 보정. 상장주식수가 급변한 날 주가가 그 역수만큼
-    움직였으면(=시총 연속) 분할류로 보고 이전 구간 가격에 배율을 적용한다.
-    유상증자는 시총이 함께 늘어 주가가 안 꺾이므로 걸리지 않는다. → (배율, 이벤트 목록)"""
-    sh, px = df["shares"].to_numpy(), df["close"].to_numpy()
+_ADJ = None
+
+
+def adj_events():
+    """stock_adj(krx.py 가 KRX 기준가로 적재) → {종목: [(날짜, ratio)]}. 한 번만 읽는다."""
+    global _ADJ
+    if _ADJ is None:
+        _ADJ = {}
+        try:
+            for r in page("stock_adj", "code,dt,ratio"):
+                _ADJ.setdefault(r["code"], []).append((pd.Timestamp(r["dt"]), float(r["ratio"])))
+        except Exception as e:                     # 표가 아직 없으면 옛 판정만으로
+            print(f"  ⚠️ stock_adj 를 못 읽었습니다({str(e)[:60]}) — 주식수 기준 판정만 씁니다")
+    return _ADJ
+
+
+def split_adjust(df, code=None):
+    """수정주가 배율 — 이전 구간 가격에 곱한다. → (배율, 이벤트 목록)
+
+    1순위: stock_adj — KRX 기준가에서 나온 거래소 조정 비율(분할·병합·무상증자·유상증자 권리락·감자).
+    2순위(그 종목에 사건 기록이 없을 때만): 상장주식수가 급변한 날 주가가 그 역수만큼 움직였으면
+    분할류로 본다. 이 옛 판정은 무상·유상증자를 못 잡는다 — 주가가 꺾이는 권리락일과 주식수가
+    늘어나는 신주 상장일이 2~3주 떨어져 있어서다(실측 티앤엘 2026-08-06 / 08-28, 2026-10-17 검토)."""
     factor, events = np.ones(len(df)), []
+    ev = adj_events().get(code) if code else None
+    if ev:
+        idx = df.index
+        for dt, r in ev:
+            m = np.asarray(idx < dt)
+            if m.any() and m[-1] == False:         # noqa: E712  창 안에서 일어난 사건만
+                factor[m] *= r
+                events.append(f"{dt.date()} 기준가 조정 ×{r:.4g} → 이전 가격 ×{r:.4g}")
+        return factor, events
+    sh, px = df["shares"].to_numpy(), df["close"].to_numpy()
     for i in range(1, len(df)):
         if sh[i - 1] <= 0 or sh[i] <= 0 or px[i - 1] <= 0:
             continue
@@ -305,7 +333,7 @@ def run_stock(code, name, push_rows, quiet=False):
         if not quiet:
             print(f"\n=== {name}({code}) — 유효 거래일 {len(df)}일뿐, 건너뜀 ===")
         return
-    f, events = split_adjust(df)
+    f, events = split_adjust(df, code)
     for c in ("high", "low", "close"):        # 분할 보정된 가격으로 프로파일을 그린다
         df[c] = df[c] * f
     df = df.rename(columns={"high": "High", "low": "Low", "close": "Close"})
