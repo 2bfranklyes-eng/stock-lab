@@ -174,8 +174,8 @@ def main():
             return
         pk = packets(a.fq, codes)
         n_chr = sum(len(t) for t in pk.values()) + len(system_prompt(a.fq)) * len(pk)
-        # 한국어는 대략 1.5자 ≈ 1토큰(시범 실측과 맞춰 볼 것). 출력은 생각 포함 종목당 ~5천 토큰으로 잡는다
-        est = (n_chr / 1.5 * PRICE[0] + len(pk) * 5000 * PRICE[1]) / 1e6 * (1 if a.now else 0.5)
+        # 실측(2026-10-17, 3종목): 1.17자 ≈ 1토큰, 출력은 생각 포함 종목당 ~1,800토큰 → 여유 있게 잡는다
+        est = (n_chr / 1.15 * PRICE[0] + len(pk) * 2500 * PRICE[1]) / 1e6 * (1 if a.now else 0.5)
         print(f"{len(pk)}종목 · 묶음 {n_chr:,}자 · 예상 약 ${est:.2f}")
         if a.dry:
             return
