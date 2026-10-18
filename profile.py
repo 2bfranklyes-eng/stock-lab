@@ -339,6 +339,12 @@ def split_adjust(df, code=None):
 
 def run_stock(code, name, push_rows, quiet=False):
     rows = page("stock_daily", "dt,high,low,close,tval,shares,mktcap", code=code)
+    # 워치리스트에서 빠졌거나 상장폐지돼 시세가 더는 안 들어오는 종목 — 옛 매물대를 '현재가'처럼 계속
+    # 보여주면 안 된다(2026-10-17 검토). 건너뛰면 아래에서 검색 목록·매물대 행이 함께 지워진다
+    if rows and pd.Timestamp(rows[-1]["dt"]) < pd.Timestamp.today().normalize() - pd.Timedelta(days=14):
+        if not quiet:
+            print(f"=== {name}({code}) — 마지막 시세 {rows[-1]['dt']}, 갱신 중단 종목이라 건너뜀 ===")
+        return
     if len(rows) < 60:
         if not quiet:
             print(f"\n=== {name}({code}) — 데이터 {len(rows)}행뿐, 건너뜀 ===")

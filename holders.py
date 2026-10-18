@@ -298,13 +298,30 @@ def sync_flows(code, dry, trading_days, allow_fetch=True):
     """캐시 + 빠진 구간만 pykrx로 증분 수집 → (수량 wide, 대금 wide). 새 행은 DB에 upsert.
     allow_fetch=False면 종목별 호출이 필요한 시점에 멈춘다 — 한 실행의 백필량을 묶는 손잡이."""
     cache = cached_flows(code)
-    today = pd.Timestamp.today().normalize()
+    # 끝 날짜는 '오늘'이 아니라 시세가 확정된 마지막 거래일 — 아침 9시 크론은 장중이라, 오늘을 넣으면
+    # pykrx 가 장중 반쪽 순매수를 오늘 날짜로 줄 수 있다(2026-10-17 검토)
+    today = min(pd.Timestamp.today().normalize(), trading_days[-1]) if len(trading_days) else         pd.Timestamp.today().normalize()
     start = today - pd.Timedelta(days=BACKFILL_DAYS)
     # max(dt)만 보고 '최신'이라 판단하면 안 된다 — 벌크는 최근 며칠만 쓰므로, 신규 종목은
     # 캐시 뒤쪽만 차고 앞이 텅 빈 채로 '오늘까지 있음'처럼 보인다. 앞도 덮였는지 같이 본다.
     # (기준은 그 종목 자신의 첫 거래일 — 최근 상장주는 앞이 비는 게 정상이라 오판하면 안 된다)
     if not cache.empty and cache["dt"].min() <= trading_days[0] + pd.Timedelta(days=15):
         start = max(start, cache["dt"].max() + pd.Timedelta(days=1))
+        # 가운데 구멍도 본다 — 벌크는 최근 20거래일만 메우므로 그보다 길게 끊겼다 재개하면 앞쪽 날들이
+        # 비고, max(dt)만 보면 '최신'이라 영영 안 채워져 순매수 0 으로 평단·CGO 가 틀어졌다.
+        # 3거래일 이상 연속으로 빈 곳만(한두 날은 거래가 없어 원래 빈 경우가 있어 매번 다시 부르게 된다)
+        have = set(cache["dt"])
+        td = trading_days[(trading_days >= cache["dt"].min()) & (trading_days <= cache["dt"].max())]
+        miss = [d for d in td if d not in have]
+        run, first = 0, None
+        for i, d in enumerate(miss):
+            prev_i = td.get_loc(miss[i - 1]) if i else None
+            run = run + 1 if (i and td.get_loc(d) == prev_i + 1) else 1
+            if run >= 3:
+                first = miss[i - 2]
+                break
+        if first is not None:
+            start = min(start, first)
     new_rows = []
     # 빠진 '거래일'이 실제로 있을 때만 pykrx를 부른다 — 주말·휴일 재실행은 캐시만으로 돈다
     if len(trading_days[(trading_days >= start) & (trading_days <= today)]):
