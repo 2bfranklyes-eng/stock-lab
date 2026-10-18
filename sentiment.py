@@ -47,12 +47,20 @@ def fetch_raw(market):
     rows, step, start = [], 1000, 0
     while True:
         r = sb.table("indicator_raw").select("dt,code,value") \
-              .eq("market", market).order("dt").range(start, start + step - 1).execute().data
+              .eq("market", market).order("dt").order("code").range(start, start + step - 1).execute().data
         rows += r
         if len(r) < step:
             break
         start += step
-    return rows
+    # dt 만으로 정렬하면 같은 날짜 행들의 순서가 페이지마다 달라져 경계에서 중복·누락이 생긴다
+    # (liquidity.py·inflation.py 는 이미 dt,code 로 고친 것 — 2026-10-17 검토에서 여기만 남아 있었다)
+    seen, out = set(), []
+    for r in rows:
+        k = (r["dt"], r["code"])
+        if k not in seen:
+            seen.add(k)
+            out.append(r)
+    return out
 
 
 def pct_rank(s, win=252):

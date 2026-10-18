@@ -75,7 +75,11 @@ def run(market):
         d = m if b == "전체" else m[m["band"] == b]
         if len(d) == 0:
             continue
-        rec = {"market": market, "band": b, "n": int(len(d))}
+        # 사건 수 = 그 밴드에 머문 연속 블록 수(backtest.py 와 같은 정의). 일수는 독립 표본이 아니다 —
+        # 10일 평활 때문에 한 밴드가 수십~수백 일 이어져, 극단 밴드의 근거가 몇 건뿐일 수 있다
+        f = m["band"] == b
+        rec = {"market": market, "band": b, "n": int(len(d)),
+               "n_episodes": None if b == "전체" else int((f & ~f.shift(fill_value=False)).sum())}
         for h in HORIZONS:
             f = d[f"fwd{h}"].dropna()
             rec[f"fwd{h}"] = round(float(f.mean() * 100), 2) if len(f) else None
@@ -83,7 +87,12 @@ def run(market):
         recs.append(rec)
     # delete→insert: 밴드가 사라져도 옛 행이 남지 않게(liquidity_backtest 와 같은 방식)
     sb.table("inflation_backtest_stats").delete().eq("market", market).execute()
-    sb.table("inflation_backtest_stats").insert(recs).execute()
+    try:
+        sb.table("inflation_backtest_stats").insert(recs).execute()
+    except Exception as e:                    # n_episodes 칸이 아직 없으면(sql/backtest_add_episodes2.sql 전) 빼고 넣는다
+        if "n_episodes" not in str(e):
+            raise
+        sb.table("inflation_backtest_stats").insert([{k: v for k, v in r.items() if k != "n_episodes"} for r in recs]).execute()
     print(f"[{market}] inflation_backtest_stats 적재 완료: {len(recs)}행\n")
 
 
