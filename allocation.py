@@ -13,8 +13,9 @@
 #      - ⚠️ 이건 '시장이 가격에 반영한 성장 기대'지 실물 성장이 아니다 — 괴리 가능. 웹 해설에 명시.
 #      - 주가/이동평균 성분은 의도적으로 뺐다: 주가로 국면을 정의하고 그 국면에서 주식 이후수익을
 #        재면 순환논법이 된다(설계 심사에서 기각). 신용(HYG) 성분도 주식 동행성이 높아 같은 이유로 제외.
-#    I(t) = inflation_daily(US).i_score 의 '스냅샷' — 상류 로직이 바뀌어도 국면 이력이
-#      소급해 출렁이지 않게 regime_daily에 박제한다(재현성).
+#    I(t) = inflation_daily(US).i_score. ⚠️ 매 실행마다 전 기간을 현재 i_score 로 다시 계산해 덮어쓴다 —
+#      상류 로직이 바뀌면 과거 국면도 바뀐다(예전 주석의 '박제'는 실제로 일어나지 않았다, 2026-10-17 검토).
+#      웹의 "국면은 사후에 다시 그려질 수 있어요" 안내가 실제 동작과 맞다.
 #    사분면 경계 50/50 + 히스테리시스: 축이 50±3 밴드를 완전히 벗어나야 국면 전환.
 #      경계 위 잦은 깜빡임(하루 단위 국면 교체)을 막는다. |축-50|<5면 transition(전환주의) 플래그.
 #
@@ -31,6 +32,7 @@
 import os
 import sys
 from dotenv import load_dotenv
+import numpy as np
 import pandas as pd
 from supabase import create_client
 
@@ -125,11 +127,15 @@ def quadrant_walk(g, i):
 def compute_regime(w, iscore):
     d = w[["copper", "gold"]].dropna()
     ratio = deglitch(d["copper"]) / deglitch(d["gold"])   # 구리/금 — 성장 베팅의 순도 높은 프록시
-    c63, c126, c252 = (pct_rank(ratio - ratio.shift(n)) for n in (63, 126, 252))
+    # 변화는 '로그 차이'(= 비율 변화율)로 잰다. 절대 차이로 재면 금 급등으로 비율 수준이 반토막 났을 때
+    # 같은 % 움직임이 절반 크기로 취급돼 순위가 50 쪽으로 쏠린다(2026-10-17 검토). 바꿔도 국면이 다른 날
+    # 1.5%, 앵커 6/6 유지, 전환 횟수 같음 — 정의만 바로잡은 것
+    lr = np.log(ratio)
+    c63, c126, c252 = (pct_rank(lr - lr.shift(n)) for n in (63, 126, 252))
     G = pd.concat([c63, c126, c252], axis=1).mean(axis=1).ewm(span=10).mean()
     out = pd.DataFrame({"g_score": G, "c_m63": c63, "c_m126": c126, "c_m252": c252,
                         "raw_coppergold": ratio}).dropna()
-    # 물가축: inflation_daily가 없는 날(주말 등)은 직전값 — 스냅샷이므로 재계산하지 않는다
+    # 물가축: inflation_daily가 없는 날(주말 등)은 직전값
     out["i_score"] = iscore.reindex(out.index, method="ffill")
     out = out.dropna(subset=["i_score"])
     quads, days = quadrant_walk(out["g_score"], out["i_score"])

@@ -44,7 +44,9 @@ def _fred(sid, start, end):
 
 def _yf(ticker, start, end):
     import yfinance as yf
-    df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
+    # 수정주가(분배금·배당 재투자) — 최근 구간(ingest.py)과 같은 기준이어야 위기끼리 비교가 된다.
+    # 원가격으로 받으면 2008년 TLT 가 분배금(연 4%)만큼 낮게 나왔다(2026-10-17 검토)
+    df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
     if df is None or df.empty:
         return pd.Series(dtype=float)
     s = df["Close"]
