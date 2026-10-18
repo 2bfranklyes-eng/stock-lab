@@ -142,6 +142,15 @@ def pct(s, higher=True):
     return r.where(s.notna())
 
 
+def debt_pct(d):
+    """부채비율 백분위(낮을수록 높음). 자본잠식은 부채비율이 정의되지 않아(None) 그냥 두면 건전성 축이
+    이자보상배율 하나로만 매겨져 90점대도 나왔다 — 가장 나쁜 0 으로 넣는다(2026-10-17 검토).
+    fin_score 와 score_backtest 가 같이 쓴다."""
+    p = pct(d["debt_ratio"], higher=False)
+    imp = d["flags"].apply(lambda f: isinstance(f, list) and "자본잠식" in f)
+    return p.mask(imp, 0.0)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry", action="store_true")
@@ -206,7 +215,7 @@ def main():
         "s_growth": [pct(e["rev_g"]), pct(e["op_g"])],
         "s_profit": [pct(e["roic"]), pct(e["op_margin"])],
         "s_cash": [pct(e["fcf_margin"]), pct(e["cash_conv"])],
-        "s_health": [pct(e["debt_ratio"], higher=False), pct(e["int_cov"])],
+        "s_health": [debt_pct(e), pct(e["int_cov"])],
     }
     for k, parts in axes.items():
         df.loc[ok, k] = pd.concat(parts, axis=1).mean(axis=1, skipna=True)

@@ -71,7 +71,9 @@ with x as (
   from x
 )
 select code, fiscal_q, bsns_year, qn, reprt, fs_div, rcept_no, rcept_dt,
-       case when first_q then revenue_ytd    when chain_ok then revenue_ytd    - p_rev   end as revenue,
+       -- 매출은 음수가 될 수 없다. 음수면 회사가 과거를 다시 작성한 것(중단사업 재분류 등 — 이번 보고서는
+       -- 계속사업만, 직전 분기 누적은 옛 기준) → 빼면 틀린 값이라 비운다(2026-10-17 검토: 실측 16건, 최대 −7.4조)
+       case when first_q then revenue_ytd    when chain_ok and revenue_ytd >= p_rev then revenue_ytd - p_rev end as revenue,
        case when first_q then op_income_ytd  when chain_ok then op_income_ytd  - p_op    end as op_income,
        case when first_q then net_income_ytd when chain_ok then net_income_ytd - p_net   end as net_income,
        case when first_q then ocf_ytd        when chain_ok then ocf_ytd        - p_ocf   end as ocf,

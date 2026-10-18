@@ -67,6 +67,8 @@ def to_3m(q):
     for out, ytd in FLOW.items():
         p = g[ytd].shift(1)
         q[out] = np.where(q["qn"] == 1, q[ytd], np.where(chain, q[ytd] - p, np.nan))
+    # 매출 3개월 값이 음수 = 과거 재작성(중단사업 재분류 등) → 빈칸(fin_q3m 뷰와 같은 규칙)
+    q.loc[q["revenue"] < 0, "revenue"] = np.nan
     return q
 
 
@@ -90,7 +92,7 @@ def score_month(uni, mets):
         "s_growth": [fin_score.pct(d["rev_g"]), fin_score.pct(d["op_g"])],
         "s_profit": [fin_score.pct(d["roic"]), fin_score.pct(d["op_margin"])],
         "s_cash": [fin_score.pct(d["fcf_margin"]), fin_score.pct(d["cash_conv"])],
-        "s_health": [fin_score.pct(d["debt_ratio"], higher=False), fin_score.pct(d["int_cov"])],
+        "s_health": [fin_score.debt_pct(d), fin_score.pct(d["int_cov"])],
     }
     for k, parts in axes.items():
         d[k] = pd.concat(parts, axis=1).mean(axis=1, skipna=True)
