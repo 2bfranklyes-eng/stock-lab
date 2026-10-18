@@ -96,8 +96,8 @@ def score_month(uni, mets):
     }
     for k, parts in axes.items():
         d[k] = pd.concat(parts, axis=1).mean(axis=1, skipna=True)
-    ax = d[list(axes)]
-    d["score"] = ax.fillna(50).mean(axis=1).where(ax.notna().sum(axis=1) >= 3)
+    ax = d[fin_score.SCORE_AXES]                  # fin_score 와 같은 축(현금 축은 2026-10-18 부터 점수에서 뺌)
+    d["score"] = ax.fillna(50).mean(axis=1).where(ax.notna().sum(axis=1) >= 2)
     return d.dropna(subset=["score"])
 
 
