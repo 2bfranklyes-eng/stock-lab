@@ -627,6 +627,20 @@ def main():
         sb.table("guru_picks").upsert(picks[i:i + 500], on_conflict="guru,code").execute()
     print(f"\nguru_picks 적재: {len(picks)}행")
 
+    # '종목' 탭(stock_meta)의 한국 PER·PBR·ROE 를 여기서 만든 DART 값으로 덮는다 — 안 그러면 같은 종목이
+    # 종목 탭(야후, 우선주 미보정·연결 순이익)과 구루 탭(DART 지배주주·우선주 보정)에서 다른 PER 로 보였다
+    # (2026-10-17 검토). screener.py 다음에 도는 이 스크립트가 마지막에 쓰므로 화면엔 DART 값이 남는다.
+    kr = [r for r in rows if r["market"] != "US" and r.get("fin_src") == "DART"]
+    n = 0
+    for r in kr:
+        upd = {k: (None if r.get(k) is None else round(float(r[k]), 6)) for k in ("per", "pbr", "roe")}
+        try:
+            sb.table("stock_meta").update(upd).eq("code", r["code"]).execute()
+            n += 1
+        except Exception as e:
+            print(f"  stock_meta {r['code']} 갱신 실패: {str(e)[:60]}")
+    print(f"stock_meta 한국 PER·PBR·ROE ← DART: {n}종목")
+
 
 if __name__ == "__main__":
     main()

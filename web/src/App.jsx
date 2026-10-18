@@ -351,7 +351,9 @@ const FIN_COLS = [
   { key: 'pbr', name: 'PBR', fmt: (v) => v?.toFixed(2), lowGood: true, hint: '시총÷자본. 낮을수록 싸다' },
   { key: 'roe', name: 'ROE', fmt: (v) => (v * 100).toFixed(0) + '%', lowGood: false, hint: '자본 대비 이익. 높을수록 좋다' },
   { key: 'op_margin', name: '영업이익률', fmt: (v) => (v * 100).toFixed(0) + '%', lowGood: false, hint: '매출 대비 영업이익' },
-  { key: 'debt_to_equity', name: '부채비율', fmt: (v) => v.toFixed(0), lowGood: true, hint: '자본 대비 부채. 낮을수록 안전' },
+  // 야후 debtToEquity = 총'차입금' ÷ 자본(%). 한국식 부채비율(총부채 ÷ 자본)과 다르다 — 매입채무·선수금이 빠져
+  // 훨씬 낮게 나온다(기아 4% vs 부채비율 71%). 이름을 '부채비율'로 두면 오해한다(2026-10-17 검토)
+  { key: 'debt_to_equity', name: '차입금/자본', fmt: (v) => v.toFixed(0) + '%', lowGood: true, hint: '총차입금 ÷ 자본(야후). 한국식 부채비율(총부채 ÷ 자본)보다 훨씬 낮게 나옵니다' },
   { key: 'rev_growth', name: '매출성장', fmt: (v) => (v > 0 ? '+' : '') + (v * 100).toFixed(0) + '%', lowGood: false, hint: '전년 대비 매출 증가율' },
   { key: 'div_yield', name: '배당', fmt: (v) => v.toFixed(1) + '%', lowGood: false, hint: '배당수익률' },
 ]
@@ -4257,7 +4259,7 @@ const SCR_PRESETS = [
   { name: '저PER·흑자', f: (s) => s.per > 0 && s.per < 12 },
   { name: '저PBR', f: (s) => s.pbr > 0 && s.pbr < 1 },
   { name: '고ROE', f: (s) => s.roe > 0.15 },
-  { name: '저부채', f: (s) => s.debt_to_equity != null && s.debt_to_equity < 50 },
+  { name: '저차입', f: (s) => s.debt_to_equity != null && s.debt_to_equity < 50 },
   { name: '고성장', f: (s) => s.rev_growth > 0.2 },
   { name: '배당', f: (s) => s.div_yield > 2 },
 ]
@@ -4390,7 +4392,7 @@ const GC = {
   roa: { name: 'ROA', f: (p) => gpct(p.roa) },
   opm: { name: '영업이익률', f: (p) => gpct(p.op_margin) },
   pm: { name: '순이익률', f: (p) => gpct(p.profit_margin) },
-  debt: { name: '부채/자본', f: (p) => (p.debt_to_equity == null ? '—' : p.debt_to_equity.toFixed(0) + '%') },
+  debt: { name: '차입금/자본', f: (p) => (p.debt_to_equity == null ? '—' : p.debt_to_equity.toFixed(0) + '%') },
   div: { name: '배당', f: (p) => (p.div_yield == null ? '—' : p.div_yield.toFixed(1) + '%') },
   peg: { name: 'PEG', f: (p) => gnum(p.peg, 2) },
   eg: { name: '이익성장', f: (p) => gsign(p.earn_growth) },
@@ -5300,15 +5302,22 @@ function PortfolioSection() {
 
 function PfDiagnosis({ items, total }) {
   const wOf = (it) => (total ? it.w / total : 0)
-  // 가중 평균은 값이 있는 종목끼리만 — 결측을 0으로 치면 지표가 실제보다 좋아 보인다
+  // 가중 평균은 값이 있는 종목끼리만 — 결측을 0으로 치면 지표가 실제보다 좋아 보인다.
+  // 예외 둘(2026-10-17 검토):
+  //  · 배당 — 야후는 무배당 종목에 값을 안 준다. 빼면 배당률이 부풀려지므로 결측 = 0%
+  //  · PER·PBR — 포트폴리오 전체의 PER 은 '이익수익률(1/PER)의 가중평균'의 역수(조화평균)다.
+  //    산술평균이면 PER 300 짜리 한 종목이 전체를 끌어올린다
+  const HARM = new Set(['per', 'pbr'])
   const wavg = (key) => {
     let num = 0, den = 0
     for (const it of items) {
-      const v = it.s[key]
-      if (v == null) continue
-      num += v * wOf(it); den += wOf(it)
+      let v = it.s[key]
+      if (v == null && key === 'div_yield') v = 0
+      if (v == null || (HARM.has(key) && !(v > 0))) continue
+      num += (HARM.has(key) ? 1 / v : v) * wOf(it); den += wOf(it)
     }
-    return den > 0 ? { v: num / den, cover: den } : null
+    if (!(den > 0)) return null
+    return { v: HARM.has(key) ? den / num : num / den, cover: den }
   }
   const sorted = [...items].sort((a, b) => b.w - a.w)
   const top3 = sorted.slice(0, 3).reduce((a, i) => a + wOf(i), 0) * 100
@@ -5355,12 +5364,13 @@ function PfDiagnosis({ items, total }) {
       {risky.length > 0 && (
         <div className="owarn">
           <b>재무 부담이 큰 종목 {risky.length}개</b> — {risky.map((r) => r.s.name).join(', ')}
-          <br />부채비율 200% 초과이거나 영업이익이 적자입니다. 사업 내용을 따로 확인해보세요.
+          <br />차입금이 자본의 2배를 넘거나 영업이익이 적자입니다. 사업 내용을 따로 확인해보세요.
         </div>
       )}
       <p className="note">
         <b>실효 종목 수</b>는 비중까지 반영한 분산 정도예요 — 10종목을 담아도 하나에 80%면 실효는 1.5개에 가깝습니다.
         <b> 커버리지</b>는 그 지표를 계산할 수 있었던 비중의 몫이고요(적자 기업은 PER이 없는 식).
+        PER·PBR은 이익(자본)을 비중대로 더한 뒤 나눈 값(조화평균)이고, 배당이 없는 종목은 0%로 넣었어요.
       </p>
     </section>
   )
@@ -5377,7 +5387,7 @@ function PfSimulation({ items, total, prices }) {
     const dts = Object.keys(byCode['KOSPI'] || {}).sort()
       .filter((d) => codes.every((c) => byCode[c]?.[d] != null))
     const use = dts.slice(-(years * 12 + 1))
-    if (use.length < 13) return { thin: true, n: use.length }
+    if (use.length < 13 || !(total > 0)) return { thin: true, n: use.length }
     const w = Object.fromEntries(items.map((i) => [i.code, total ? i.w / total : 0]))
     let pv = 100, bv = 100, peak = 100, mdd = 0
     const series = [{ dt: use[0], pf: 100, bm: 100 }]
@@ -5394,7 +5404,8 @@ function PfSimulation({ items, total, prices }) {
     }
     const m = rets.reduce((a, b) => a + b, 0) / rets.length
     const sd = Math.sqrt(rets.reduce((a, b) => a + (b - m) ** 2, 0) / rets.length)
-    return { series, ret: pv - 100, bench: bv - 100, mdd: mdd * 100, vol: sd * Math.sqrt(12) * 100, n: rets.length }
+    return { series, ret: pv - 100, bench: bv - 100, mdd: mdd * 100, vol: sd * Math.sqrt(12) * 100, n: rets.length,
+      from: use[0].slice(0, 7), short: rets.length < years * 12 }
   }, [prices, items, total, years])
 
   if (!prices) return <section className="card"><h2>📈 과거 시뮬레이션</h2><p className="note">가격 불러오는 중…</p></section>
@@ -5418,6 +5429,12 @@ function PfSimulation({ items, total, prices }) {
           <button key={y} className={years === y ? 'on' : ''} onClick={() => setYears(y)}>{y}년</button>
         ))}
       </div>
+      {sim.short && (
+        <div className="owarn">
+          ⚠️ <b>{years}년이 아니라 {sim.n}개월({sim.from}부터)</b>입니다 — 상장한 지 짧은 종목이 있어 모든 종목에
+          가격이 함께 있는 구간만 계산했어요.
+        </div>
+      )}
       <div className="ocells">
         <div><span>누적 수익률</span><b style={{ color: sim.ret > 0 ? UP : DN }}>
           {sim.ret > 0 ? '+' : ''}{sim.ret.toFixed(0)}%</b></div>
@@ -5439,8 +5456,9 @@ function PfSimulation({ items, total, prices }) {
       </ResponsiveContainer>
       <div className="owarn">
         <b>이건 예측이 아니라 되짚기입니다.</b> 매월 지금 비중으로 재조정했다고 가정했고,
-        세금·거래비용·배당을 넣지 않았습니다. 무엇보다 <b>지금 살아남은 종목</b>으로만 계산한 값이라
-        실제 성적보다 좋게 나옵니다({sim.n}개월 기준).
+        세금·거래비용은 넣지 않았습니다. 종목 가격은 배당을 재투자한 수정주가인데 <b>코스피는 배당이 빠진
+        가격지수</b>라, '코스피 대비'가 해마다 1.5~2%p쯤 유리하게 나옵니다. 무엇보다 <b>지금 살아남은 종목</b>으로만
+        계산한 값이라 실제 성적보다 좋게 나옵니다({sim.n}개월 기준, {sim.from}부터).
       </div>
     </section>
   )
